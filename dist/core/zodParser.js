@@ -1,7 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.parseRawZod = exports.extractSchemas = void 0;
 //src/core/zodParser.ts
-const { Project, SyntaxKind } = require("ts-morph");
+const { Project } = require("ts-morph");
 function extractSchemas(pattern) {
     const project = new Project({ tsConfigFilePath: "tsconfig.json" });
     project.addSourceFilesAtPaths(pattern);
@@ -20,21 +21,16 @@ function extractSchemas(pattern) {
                     continue;
                 const raw = init.getText();
                 const fields = parseRawZod(raw);
-                schemas.push({
-                    name: decl.getName(),
-                    fields,
-                    raw,
-                });
+                schemas.push({ name: decl.getName(), fields, raw });
             }
         }
     }
     return schemas;
 }
+exports.extractSchemas = extractSchemas;
 /**
- * Very simple parser for first-level Zod object
- * Supports: string, number, boolean, optional
- * @param {string} raw
- * @returns {Record<string, {type:string, required:boolean}>}
+ * Einfacher parser: erkennt first-level z.object({ ... })
+ * unterstützt: z.string(), z.number(), z.boolean(), z.date(), z.enum([...]), optional(), z.array(z.object({...})) via ref hint
  */
 function parseRawZod(raw) {
     const fields = {};
@@ -42,16 +38,23 @@ function parseRawZod(raw) {
     if (!objMatch)
         return fields;
     const body = objMatch[1];
-    // Match each field: key: z.type() or z.type().optional()
-    const fieldRegex = /(\w+)\s*:\s*z\.(string|number|boolean|array|object)\((?:.*?)\)(\.optional\(\))?/g;
+    // enum
+    const enumRegex = /(\w+)\s*:\s*z\.enum\(\s*\[([\s\S]*?)\]\s*\)(\.optional\(\))?/g;
     let m;
+    while ((m = enumRegex.exec(body)) !== null) {
+        const [, key, listRaw, optional] = m;
+        const items = Array.from(listRaw.matchAll(/['"`]([^'"`]+)['"`]/g)).map((mm) => mm[1]);
+        fields[key] = { type: "string", required: !optional, enum: items };
+    }
+    // primitives & date/array/object (basic)
+    const fieldRegex = /(\w+)\s*:\s*z\.(string|number|boolean|date|array|object)(?:\([^)]*\))?(\.optional\(\))?/g;
     while ((m = fieldRegex.exec(body)) !== null) {
         const [, key, type, optional] = m;
-        fields[key] = {
-            type,
-            required: !optional,
-        };
+        const mapped = type === "date" ? "timestamp" : type;
+        fields[key] = { type: mapped, required: !optional };
     }
+    // NOTE: For deep object/array refs you should add a mapping JSON that references other schemas.
     return fields;
 }
+exports.parseRawZod = parseRawZod;
 module.exports = { extractSchemas };

@@ -4,7 +4,7 @@
 const fsPromises = require("fs/promises");
 const { readJSONGen } = require("../core/fileUtils");
 const { buildRequiredCheck } = require("../core/ruleCompiler");
-// --- Felder rekursiv auflösen ---
+// --- Flatten Fields rekursiv ---
 function flattenFields(schemaName, schemaDef, mapping, visited = new Set(), warnings = []) {
     if (visited.has(schemaName))
         return {};
@@ -12,27 +12,25 @@ function flattenFields(schemaName, schemaDef, mapping, visited = new Set(), warn
     const result = {};
     if (!schemaDef.fields)
         return result;
-    for (const [key, valRaw] of Object.entries(schemaDef.fields)) {
-        const val = valRaw;
+    for (const [key, rawVal] of Object.entries(schemaDef.fields)) {
+        const val = rawVal;
         if (val.required === false) {
-            warnings.push(`⚠ Optional field "${key}" in schema "${schemaName}" will NOT be enforced in Firestore rules.`);
+            warnings.push(`⚠ Optional field "${key}" in schema "${schemaName}" will NOT be strictly enforced.`);
         }
-        if (val.type === "object" && val.ref) {
-            const nested = mapping[val.ref];
-            result[key] = nested
-                ? {
-                    type: "object",
-                    required: val.required !== false,
-                    fields: flattenFields(val.ref, nested, mapping, visited, warnings),
-                }
-                : {
-                    type: "object",
-                    required: val.required !== false,
-                    fields: {},
-                };
+        if ((val.type === "object" || val.type === "array") && val.ref) {
+            const nestedDef = mapping[val.ref];
+            result[key] = {
+                type: val.type,
+                required: val.required !== false,
+                fields: nestedDef
+                    ? flattenFields(val.ref, nestedDef, mapping, visited, warnings)
+                    : {},
+                enum: val.enum,
+                ref: val.ref,
+            };
         }
         else {
-            result[key] = { type: val.type, required: val.required !== false };
+            result[key] = { ...val, required: val.required !== false };
         }
     }
     return result;
@@ -41,52 +39,93 @@ function flattenFields(schemaName, schemaDef, mapping, visited = new Set(), warn
 async function generateCommand(options) {
     const cfg = readJSONGen(options.config);
     const mapping = readJSONGen(options.mapping);
+    if (!cfg || !Array.isArray(cfg.collections) || cfg.collections.length === 0) {
+        throw new Error("Keine Collections in config gefunden oder Datei leer.");
+    }
     const lines = [];
     lines.push(`rules_version = '2';`);
     lines.push(`service cloud.firestore {`);
     lines.push(`  match /databases/{database}/documents {`);
     lines.push(`    function isSignedIn() { return request.auth != null; }`);
     const generatedFunctions = new Set();
+    function createNestedValidators(prefixFunc, metaFields, basePad, validators = []) {
+        for (const [field, meta] of Object.entries(metaFields)) {
+            if (meta.fields && Object.keys(meta.fields).length) {
+                const nestedFunc = `${prefixFunc}_${field}`;
+                if (!generatedFunctions.has(nestedFunc)) {
+                    const nestedChecks = buildRequiredCheck(nestedFunc, meta.fields);
+                    for (const l of nestedChecks)
+                        lines.push(basePad + "  " + l);
+                    generatedFunctions.add(nestedFunc);
+                }
+                validators.push(`${nestedFunc}_hasOnlyTopLevel()`);
+                validators.push(`${nestedFunc}()`);
+                createNestedValidators(nestedFunc, meta.fields, basePad, validators);
+            }
+        }
+        return validators;
+    }
     function processCollection(col, indent = 4) {
         const pad = " ".repeat(indent);
         lines.push(`${pad}match /${col.path} {`);
-        lines.push(`${pad}  allow read: if isSignedIn();`);
+        // 🔹 Read-Access Owner-Check
+        if (col.ownerField) {
+            lines.push(`${pad}  allow read: if isSignedIn() && resource.data.${col.ownerField} == request.auth.uid;`);
+        }
+        else {
+            lines.push(`${pad}  allow read: if isSignedIn();`);
+        }
+        let allValidators = [];
         if (col.schema && mapping[col.schema]) {
             const warnings = [];
             const flatFields = flattenFields(col.schema, mapping[col.schema], mapping, new Set(), warnings);
-            // Funktionsname nur nach Schema
             const funcName = `hasRequired_${col.schema}`;
             if (!generatedFunctions.has(funcName)) {
-                const checks = buildRequiredCheck(funcName, flatFields);
+                const checks = buildRequiredCheck(funcName, flatFields, col.ownerField);
                 for (const line of checks)
-                    lines.push(pad + line);
+                    lines.push(pad + "  " + line);
                 generatedFunctions.add(funcName);
             }
-            for (const warn of warnings)
-                console.warn(`${pad}${warn}`);
-            if (col.ownerField) {
-                lines.push(`${pad}  allow create: if isSignedIn() && request.resource.data.${col.ownerField} == request.auth.uid && ${funcName}();`);
-                lines.push(`${pad}  allow update: if isSignedIn() && request.resource.data.${col.ownerField} == request.auth.uid && ${funcName}();`);
-            }
+            allValidators.push(`${funcName}_hasOnlyTopLevel()`, `${funcName}()`);
+            allValidators.push(...createNestedValidators(funcName, flatFields, pad));
+            for (const w of warnings)
+                console.warn(`${pad}${w}`);
         }
-        else if (col.ownerField) {
-            lines.push(`${pad}  allow create: if isSignedIn() && request.resource.data.${col.ownerField} == request.auth.uid;`);
-            lines.push(`${pad}  allow update: if isSignedIn() && request.resource.data.${col.ownerField} == request.auth.uid;`);
+        const validatorsExpr = allValidators.length
+            ? allValidators.join(" && ")
+            : "true";
+        // 🔹 Create & Update mit Owner-Check
+        if (col.ownerField) {
+            lines.push(`${pad}  allow create: if isSignedIn() && request.resource.data.${col.ownerField} == request.auth.uid && ${validatorsExpr};`);
+            // 🔹 Update prüft parent + request
+            lines.push(`${pad}  allow update: if isSignedIn() && resource.data.${col.ownerField} == request.auth.uid && request.resource.data.${col.ownerField} == request.auth.uid && ${validatorsExpr};`);
         }
+        else {
+            lines.push(`${pad}  allow create: if isSignedIn() && ${validatorsExpr};`);
+            lines.push(`${pad}  allow update: if isSignedIn() && ${validatorsExpr};`);
+        }
+        // 🔹 Nested Subcollections: Ownership aus Parent übernehmen, falls ownerField nicht gesetzt
         if (Array.isArray(col.subcollections)) {
-            for (const subCol of col.subcollections) {
-                processCollection(subCol, indent + 2);
+            for (const sub of col.subcollections) {
+                if (!sub.ownerField && col.ownerField)
+                    sub.ownerField = col.ownerField;
+                processCollection(sub, indent + 2);
             }
         }
         lines.push(`${pad}}`);
     }
-    for (const col of cfg.collections || []) {
+    for (const col of cfg.collections) {
         processCollection(col);
     }
     lines.push(`  }`);
     lines.push(`}`);
-    await fsPromises.writeFile(options.out, lines.join("\n"), "utf8");
-    console.log(`Generated ${options.out}`);
+    lines.push("");
+    const output = lines.join("\n");
+    if (options.out) {
+        await fsPromises.writeFile(options.out, output, "utf-8");
+        console.log(`✅ Rules file generated: ${options.out}`);
+    }
+    return output;
 }
 // --- CommonJS Export ---
 module.exports = { generateCommand };

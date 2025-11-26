@@ -1,19 +1,15 @@
 //src/core/fileUtils.ts
-export {};
-
 const fs = require("fs");
 const path = require("path");
 
-// ---- Typen ----
-type JSONValue = any; // Falls du hier strenger willst, sag’s.
-
-// ---- Funktionen ----
+export type JSONValue = any;
 
 function readJSONGen(filePath: string): JSONValue {
   const full = path.resolve(filePath);
-  const data = fs.readFileSync(full, "utf8");
-  return JSON.parse(data);
+  return JSON.parse(fs.readFileSync(full, "utf8"));
 }
+
+const readJSON = readJSONGen;
 
 function fileExists(filePath: string): boolean {
   return fs.existsSync(path.resolve(filePath));
@@ -27,8 +23,4 @@ function writeJSON(filePath: string, data: JSONValue): void {
   );
 }
 
-module.exports = {
-  readJSONGen,
-  fileExists,
-  writeJSON,
-};
+module.exports = { readJSONGen, readJSON, fileExists, writeJSON };
