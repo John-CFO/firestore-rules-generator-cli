@@ -2,12 +2,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.buildRequiredCheck = void 0;
 /**
- * Escape array für hasOnly([...])
- */
-function escapeArr(arr) {
-    return "[" + arr.map((s) => `"${s}"`).join(", ") + "]";
-}
-/**
  * buildRequiredCheck
  * - schemaFuncName: vollständiger Funktionsname, z.B. "hasRequired_ProjectStateSchema"
  * - fields: feld-meta (kann nested enthalten)
@@ -32,7 +26,7 @@ function buildRequiredCheck(schemaFuncName, fields, ownerField) {
     // Recursive Field Checks
     function buildFieldExpr(prefix, meta) {
         const expr = `request.resource.data${prefix}`;
-        let checks = [];
+        const checks = [];
         // Typprüfung
         switch (meta.type) {
             case "string":
@@ -59,16 +53,14 @@ function buildRequiredCheck(schemaFuncName, fields, ownerField) {
             checks.push(`${expr} in [${meta.enum.map((v) => `"${v}"`).join(", ")}]`);
         // Nested Fields
         if (meta.fields && Object.keys(meta.fields).length) {
-            const nestedChecks = Object.entries(meta.fields).map(([k, v]) => buildFieldExpr(`${prefix}.${k}`, v));
-            checks.push(...nestedChecks);
+            for (const [k, v] of Object.entries(meta.fields)) {
+                checks.push(buildFieldExpr(`${prefix}.${k}`, v));
+            }
         }
         const presence = `request.resource.data.keys().has("${prefix.slice(1)}")`;
-        if (meta.required) {
-            return `(${presence} && ${checks.join(" && ")})`;
-        }
-        else {
-            return `(!${presence} || (${checks.join(" && ")}))`;
-        }
+        return meta.required
+            ? `(${presence} && ${checks.join(" && ")})`
+            : `(!${presence} || (${checks.join(" && ")}))`;
     }
     const fieldExprs = Object.entries(fields).map(([k, v]) => buildFieldExpr(`.${k}`, v));
     lines.push(`function ${schemaFuncName}() {`);

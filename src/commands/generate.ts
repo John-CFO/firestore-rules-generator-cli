@@ -88,7 +88,11 @@ async function generateCommand(options: GenerateOpts) {
       if (meta.fields && Object.keys(meta.fields).length) {
         const nestedFunc = `${prefixFunc}_${field}`;
         if (!generatedFunctions.has(nestedFunc)) {
-          const nestedChecks = buildRequiredCheck(nestedFunc, meta.fields);
+          const nestedChecks = buildRequiredCheck(
+            nestedFunc,
+            meta.fields,
+            "userId"
+          );
           for (const l of nestedChecks) lines.push(basePad + "  " + l);
           generatedFunctions.add(nestedFunc);
         }
@@ -99,12 +103,10 @@ async function generateCommand(options: GenerateOpts) {
     }
     return validators;
   }
-
   function processCollection(col: any, indent = 4) {
     const pad = " ".repeat(indent);
     lines.push(`${pad}match /${col.path} {`);
 
-    // 🔹 Read-Access Owner-Check
     if (col.ownerField) {
       lines.push(
         `${pad}  allow read: if isSignedIn() && resource.data.${col.ownerField} == request.auth.uid;`
@@ -142,12 +144,10 @@ async function generateCommand(options: GenerateOpts) {
       ? allValidators.join(" && ")
       : "true";
 
-    // 🔹 Create & Update mit Owner-Check
     if (col.ownerField) {
       lines.push(
         `${pad}  allow create: if isSignedIn() && request.resource.data.${col.ownerField} == request.auth.uid && ${validatorsExpr};`
       );
-      // 🔹 Update prüft parent + request
       lines.push(
         `${pad}  allow update: if isSignedIn() && resource.data.${col.ownerField} == request.auth.uid && request.resource.data.${col.ownerField} == request.auth.uid && ${validatorsExpr};`
       );
@@ -156,7 +156,6 @@ async function generateCommand(options: GenerateOpts) {
       lines.push(`${pad}  allow update: if isSignedIn() && ${validatorsExpr};`);
     }
 
-    // 🔹 Nested Subcollections: Ownership aus Parent übernehmen, falls ownerField nicht gesetzt
     if (Array.isArray(col.subcollections)) {
       for (const sub of col.subcollections) {
         if (!sub.ownerField && col.ownerField) sub.ownerField = col.ownerField;
