@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.vscode/
+
+# Generated artifacts from running the CLI locally
+.zod-mapping.json
+firestore.rules
+firestore.rules.bak
+rules.config.json
