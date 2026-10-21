@@ -28,6 +28,7 @@ The CLI does not replace Cloud Functions. It produces a starting point that forc
 
 ## 1. What the CLI does
 
+- **Discover**: scans source files for Firestore `doc()` / `collection()` calls via `ts-morph`, extracts the collection hierarchy, and writes a suggested config to `rules.config.json.suggested`. Conservative defaults: all schemas marked `REPLACE_WITH_SCHEMA_NAME`, all `allow` flags except `read` set to `false`. Does **not** overwrite `rules.config.json` — the user reviews and merges manually.
 - **Scan**: finds exported variables with the `@AppSec` JSDoc tag, parses their initializer via `ts-morph`, and extracts type, required status, nested objects, `min`/`max`, `regex`, `enum`, `nullable`, and `strict`.
 - **Validate**: checks that all schemas referenced in `rules.config.json` exist in the mapping before generation starts.
 - **Generate**: produces a `firestore.rules` file with:
@@ -49,6 +50,8 @@ All generated comments are ASCII so they remain readable in any console and any 
 - **Does not guess server fields.** If the document contains fields that are not in the Zod schema (e.g. `createdAt`, `updatedAt`, `uid`), they do not appear in the rules. With `.strict()`, the user must add them manually to the `hasOnly` whitelist.
 - **No cross-document checks.** Rules such as "`projectId` must exist in `Projects/{projectId}`" cannot be expressed with Firestore rules alone.
 - **Not a Cloud Function replacement.** If the actual validation runs in Cloud Functions (because the client does not write directly), the generated field checks are redundant. See Section 11.
+- **`discover` does not assign schemas to collections.** It cannot know that `FirestoreUserUpdateSchema` belongs to `Users/{userId}` — that is an application-level decision. The output uses `REPLACE_WITH_SCHEMA_NAME` as a placeholder, and the user assigns each schema manually. `validate` lists available schemas when a placeholder remains.
+- **`discover` uses the parameter names found in code.** If your code uses `note.id`, the suggested path is `Notes/{id}`. If it uses `targetDay`, the suggested path is `WorkHours/{targetDay}`. The tool does not guess semantic names — rename them in `rules.config.json` if you prefer different identifiers. Firestore only cares about the structure, not the parameter names.
 - **No `customChecks` support.** The field is currently not processed. Custom conditions must be added manually to the generated file.
 
 ---
@@ -91,6 +94,35 @@ node dist/cli.js --help
 ---
 
 ## 4. Commands
+
+### `frcli discover [-p "**/*.{ts,tsx}"] [-o rules.config.json.suggested]`
+
+Scans source files for Firestore `doc()` and `collection()` calls, extracts the collection hierarchy, and writes a suggested config.
+
+- **Default pattern**: `**/*.{ts,tsx}` — relative to the current working directory.
+- **Default output**: `rules.config.json.suggested`.
+
+The command does **not** write to `rules.config.json` directly. It writes a `.suggested` file that you review and merge manually.
+
+**What it extracts:**
+
+- `doc(db, "Users", uid, "Services", sid)` → `Users/{uid}/Services/{sid}`
+- `collection(db, "Users", uid, "Services")` → `Users/{uid}/Services`
+- Paths are merged by collection name: `Users/{uid}` and `Users/{userId}` become one node, preferring the more descriptive parameter name.
+
+**What it does not do:**
+
+- Does not assign schemas. All collections get `"schema": "REPLACE_WITH_SCHEMA_NAME"`.
+- Does not set `allow` flags meaningfully. All default to `read: true`, rest `false`.
+- Does not resolve wrapper functions like `fetchProjectsApi(serviceId)`. If the actual `doc()` call is inside the wrapper's implementation, the path is found when that file is scanned — but if the wrapper builds the path dynamically, it may be missed.
+
+**Review checklist after running `discover`:**
+
+1. Every collection your app touches must appear in the output. If one is missing, the wrapper hiding it is too complex — add it manually.
+2. Replace `REPLACE_WITH_SCHEMA_NAME` with the correct schema from `.zod-mapping.json`.
+3. Adjust `allow` flags per collection.
+4. Rename `{id}` / `{uid}` / `{targetDay}` parameters if you prefer semantic names.
+5. Copy the result into `rules.config.json` (or start from it) and run `validate` → `generate`.
 
 ### `frcli init [-o rules.config.json]`
 
@@ -204,14 +236,14 @@ The config describes the Firestore tree and the access rules per collection.
 
 ### Fields
 
-| Field | Required | Description |
-|---|---|---|
-| `path` | yes | Firestore path with `{param}` placeholders. For subcollections, **relative** to the parent (only the last segment, e.g. `Services/{serviceId}`). |
-| `ownerField` | no | Name of the field that contains the owner variable (e.g. `"userId"`). Used for `isOwner(userId)` checks. **Inherits to subcollections** if not set there. |
-| `schema` | no | Name of a schema from `.zod-mapping.json`. If omitted, no field validation is generated — only `allow` lines. |
-| `allow` | no | Per-operation flags. See below. |
-| `subcollections` | no | Array of subcollection objects, same structure as above. |
-| `customChecks` | no | **Not implemented.** Currently ignored. Do not use. |
+| Field            | Required | Description                                                                                                                                               |
+| ---------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `path`           | yes      | Firestore path with `{param}` placeholders. For subcollections, **relative** to the parent (only the last segment, e.g. `Services/{serviceId}`).          |
+| `ownerField`     | no       | Name of the field that contains the owner variable (e.g. `"userId"`). Used for `isOwner(userId)` checks. **Inherits to subcollections** if not set there. |
+| `schema`         | no       | Name of a schema from `.zod-mapping.json`. If omitted, no field validation is generated — only `allow` lines.                                             |
+| `allow`          | no       | Per-operation flags. See below.                                                                                                                           |
+| `subcollections` | no       | Array of subcollection objects, same structure as above.                                                                                                  |
+| `customChecks`   | no       | **Not implemented.** Currently ignored. Do not use.                                                                                                       |
 
 ### `allow` defaults
 
@@ -229,6 +261,23 @@ If `allow` is set but individual flags are missing, the defaults apply only to t
 Collections that are not listed do not appear in the generated tree and are denied by Firestore by default.
 
 If a collection has no `@AppSec` schema (because validation happens in a Cloud Function, for example), omit the `schema` field and use only `allow`.
+
+### Building the config from your existing code
+
+If you don't have hand-written Firestore rules yet, `discover` can suggest a starting tree:
+
+```powershell
+npx frcli discover
+```
+
+This writes `rules.config.json.suggested`, which you then edit:
+
+1. Replace `REPLACE_WITH_SCHEMA_NAME` per collection with the correct schema from `.zod-mapping.json`. Run `npx frcli validate` after editing — it lists available schemas if a placeholder remains.
+2. Set `allow` flags per collection based on your access policy.
+3. Rename parameters (`{id}`, `{targetDay}`) if you prefer different names.
+4. Copy the result to `rules.config.json`.
+
+Collections without an `@AppSec` schema (e.g. where validation happens in a Cloud Function) should have the `schema` field **omitted entirely** — not set to a placeholder.
 
 ---
 
@@ -265,49 +314,49 @@ If a collection has no `@AppSec` schema (because validation happens in a Cloud F
 
 ### Field attributes
 
-| Attribute | Type | Meaning |
-|---|---|---|
-| `type` | string | `"string"`, `"number"`, `"boolean"`, `"timestamp"`, `"object"`, `"array"`, `"unknown"`, `"any"` |
-| `required` | boolean | `false` for `.optional()` |
-| `nullable` | boolean | `true` for `.nullable()` — value may be `null` |
-| `enum` | string[] | Values from `z.enum([...])` |
-| `min` / `max` | number | Numeric constraints or string length |
-| `regex` | string | Regex literal as a string (with slashes) |
-| `ref` | string | When referencing another schema |
-| `fields` | object | For nested objects |
-| `hasComplexCheck` | boolean | `true` for `.refine()`, `.transform()`, `z.email()`, `z.url()`, etc. |
-| `complexCheckWarning` | string | Description of what needs manual checking |
+| Attribute             | Type     | Meaning                                                                                         |
+| --------------------- | -------- | ----------------------------------------------------------------------------------------------- |
+| `type`                | string   | `"string"`, `"number"`, `"boolean"`, `"timestamp"`, `"object"`, `"array"`, `"unknown"`, `"any"` |
+| `required`            | boolean  | `false` for `.optional()`                                                                       |
+| `nullable`            | boolean  | `true` for `.nullable()` — value may be `null`                                                  |
+| `enum`                | string[] | Values from `z.enum([...])`                                                                     |
+| `min` / `max`         | number   | Numeric constraints or string length                                                            |
+| `regex`               | string   | Regex literal as a string (with slashes)                                                        |
+| `ref`                 | string   | When referencing another schema                                                                 |
+| `fields`              | object   | For nested objects                                                                              |
+| `hasComplexCheck`     | boolean  | `true` for `.refine()`, `.transform()`, `z.email()`, `z.url()`, etc.                            |
+| `complexCheckWarning` | string   | Description of what needs manual checking                                                       |
 
 ### Schema attributes
 
-| Attribute | Type | Meaning |
-|---|---|---|
-| `strict` | boolean | `true` if `.strict()` on the top-level object |
-| `raw` | string | The original Zod expression (for traceability) |
-| `requiresManual` | object | All fields with `hasComplexCheck: true`, listed flat |
+| Attribute        | Type    | Meaning                                              |
+| ---------------- | ------- | ---------------------------------------------------- |
+| `strict`         | boolean | `true` if `.strict()` on the top-level object        |
+| `raw`            | string  | The original Zod expression (for traceability)       |
+| `requiresManual` | object  | All fields with `hasComplexCheck: true`, listed flat |
 
 ---
 
 ## 7. Automatically recognized Zod patterns
 
-| Zod | Firestore rules translation |
-|---|---|
-| `z.string()` | `is string` |
-| `z.number()` | `is number` |
-| `z.boolean()` | `is bool` |
-| `z.date()` | `is timestamp` |
-| `z.object({...})` | `is map` + recursive field checks |
-| `z.array(...)` | `is list` |
-| `z.enum([...])` | `in ["a", "b", ...]` |
-| `.min(n)` (number) | `>= n` |
-| `.max(n)` (number) | `<= n` |
-| `.min(n)` (string) | `.size() >= n` |
-| `.max(n)` (string) | `.size() <= n` |
-| `.regex(/.../)` | `.matches("...")` |
-| `.optional()` | `!has(...) \|\|` |
-| `.nullable()` | `== null \|\|` |
-| `.strict()` | `hasComplexCheck` + hint, `hasOnly` suggestion in comment |
-| `.default(...)` | Ignored (Firestore has no defaults) |
+| Zod                | Firestore rules translation                               |
+| ------------------ | --------------------------------------------------------- |
+| `z.string()`       | `is string`                                               |
+| `z.number()`       | `is number`                                               |
+| `z.boolean()`      | `is bool`                                                 |
+| `z.date()`         | `is timestamp`                                            |
+| `z.object({...})`  | `is map` + recursive field checks                         |
+| `z.array(...)`     | `is list`                                                 |
+| `z.enum([...])`    | `in ["a", "b", ...]`                                      |
+| `.min(n)` (number) | `>= n`                                                    |
+| `.max(n)` (number) | `<= n`                                                    |
+| `.min(n)` (string) | `.size() >= n`                                            |
+| `.max(n)` (string) | `.size() <= n`                                            |
+| `.regex(/.../)`    | `.matches("...")`                                         |
+| `.optional()`      | `!has(...) \|\|`                                          |
+| `.nullable()`      | `== null \|\|`                                            |
+| `.strict()`        | `hasComplexCheck` + hint, `hasOnly` suggestion in comment |
+| `.default(...)`    | Ignored (Firestore has no defaults)                       |
 
 Arrow-function wrappers (`() => z.object({...})`) are automatically unwrapped.
 
@@ -317,17 +366,17 @@ Arrow-function wrappers (`() => z.object({...})`) are automatically unwrapped.
 
 These patterns are recognized but **not** translated. They appear as a comment block above the respective `match` block:
 
-| Zod | Reason |
-|---|---|
-| `.refine()` | Arbitrary JS logic, no Firestore equivalent |
-| `.superRefine()` | As above, multi-step |
-| `.transform()` | Changes type/semantics, Firestore cannot transform |
-| `.preprocess()` | Like `transform` |
-| `z.email()` / `z.url()` / `z.uuid()` / `z.cuid()` | No built-in regex — user decides |
-| `z.record()` / `z.map()` | Dynamic keys, not mappable |
-| Reference to another schema (`ref`) | CLI does not expand, user checks the relationship |
-| Array-of-objects | Element checks are business logic |
-| `.strict()` | `hasOnly` whitelist is policy, not automatic |
+| Zod                                               | Reason                                             |
+| ------------------------------------------------- | -------------------------------------------------- |
+| `.refine()`                                       | Arbitrary JS logic, no Firestore equivalent        |
+| `.superRefine()`                                  | As above, multi-step                               |
+| `.transform()`                                    | Changes type/semantics, Firestore cannot transform |
+| `.preprocess()`                                   | Like `transform`                                   |
+| `z.email()` / `z.url()` / `z.uuid()` / `z.cuid()` | No built-in regex — user decides                   |
+| `z.record()` / `z.map()`                          | Dynamic keys, not mappable                         |
+| Reference to another schema (`ref`)               | CLI does not expand, user checks the relationship  |
+| Array-of-objects                                  | Element checks are business logic                  |
+| `.strict()`                                       | `hasOnly` whitelist is policy, not automatic       |
 
 ---
 
@@ -389,16 +438,37 @@ The `REQUIRES MANUAL` blocks are the most important part. They show the user whe
 
 ### In the target project
 
+#### Option A — you already have a hand-written `rules.config.json`
+
 ```powershell
-# 1. Collect all @AppSec schemas.
-#    Default pattern is "**/*.ts" — adjust the path if your schemas
-#    live in a specific folder (e.g. --pattern "validation/**/*.ts")
+# 1. Collect all @AppSec schemas
 npx frcli scan-zod
 
 # 2. Validate config against mapping
 npx frcli validate
 
 # 3. Generate rules
+npx frcli generate
+```
+
+#### Option B — start from your existing code
+
+```powershell
+# 1. Collect all @AppSec schemas
+npx frcli scan-zod
+
+# 2. Discover your collection tree from doc()/collection() calls
+npx frcli discover
+
+# 3. Edit rules.config.json.suggested:
+#    - assign schemas per collection
+#    - adjust allow flags
+#    - copy to rules.config.json when done
+
+# 4. Validate
+npx frcli validate
+
+# 5. Generate rules
 npx frcli generate
 ```
 
@@ -490,6 +560,20 @@ Usually a pattern problem. Causes:
 - `tsconfig.json` excludes the folder.
 - The file is not a `.ts` file (`.tsx` is currently not matched).
 
+### `discover` finds fewer collections than expected
+
+`discover` only sees `doc()` / `collection()` calls with string-literal or simple-variable arguments. Causes for missing paths:
+
+- **Wrapper functions**: `fetchProjects(serviceId)` hides the actual `doc(db, "Users", uid, "Services", sid, "Projects")` in another file. The path is found when that file is scanned — but only if the wrapper file is within the pattern range.
+- **Template literals**: `doc(db, `Users/${uid}/Services`)` is not resolvable. `discover` emits a warning and skips it. Refactor to multi-arg form (`doc(db, "Users", uid, "Services")`) to fix.
+- **Dynamic paths from config**: `doc(db, getPath())` cannot be resolved at scan time.
+
+Check the warning list printed after `discover` for skipped arguments.
+
+### `discover` output contains `REPLACE_WITH_SCHEMA_NAME`
+
+Expected. The command does not know which schema belongs to which collection — that's an application decision. See Section 5 for how to assign schemas.
+
 ### `Dry run complete!` with many "Invalid function name: has" warnings
 
 These warnings are false positives from the Firebase CLI linter. The decisive line is `cloud.firestore: rules file ... compiled successfully`. If it is there, the file is valid.
@@ -515,7 +599,10 @@ The following artifacts are generated and do not belong in the target project's 
 ```gitignore
 .zod-mapping.json
 firestore.rules
+rules.config.json.suggested
 ```
+
+`rules.config.json.suggested` is a temporary working file produced by `discover`. Once you've copied your edits into `rules.config.json`, delete the `.suggested` file or leave it gitignored.
 
 `rules.config.json` is hand-written and **should** be committed to the repository — otherwise every team member has to rebuild it.
 
@@ -528,11 +615,13 @@ firestore-rules-cli/
 ├─ src/
 │  ├─ cli.ts                     # CLI entrypoint (CommonJS, shebang)
 │  ├─ commands/
+│  │  ├─ discover.ts             # Suggests rules.config.json from source scan
 │  │  ├─ init.ts
 │  │  ├─ scanZod.ts
 │  │  ├─ validate.ts
 │  │  └─ generate.ts
 │  ├─ core/
+│  │  ├─ structureDiscovery.ts   # doc()/collection() scan + tree builder
 │  │  ├─ zodParser.ts            # ts-morph-based Zod parser
 │  │  ├─ ruleCompiler.ts         # Zod field → Firestore expression
 │  │  └─ fileUtils.ts            # JSON I/O
