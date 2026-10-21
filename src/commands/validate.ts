@@ -1,11 +1,15 @@
-// // src/commands/validate.ts
+// src/commands/validate.ts
+
+// imported modules
 const { fileExists, readJSON } = require("../core/fileUtils");
 
+// interface
 export interface ValidateOpts {
   config?: string;
   mapping?: string;
 }
 
+// --- Validate Command Function ---
 function validateCommand(opts: ValidateOpts) {
   const configFile = opts.config || "rules.config.json";
   const mappingFile = opts.mapping || ".zod-mapping.json";
@@ -25,7 +29,7 @@ function validateCommand(opts: ValidateOpts) {
   for (const col of config.collections || []) {
     if (col.schema && !mapping[col.schema]) {
       console.error(
-        `Schema referenced in config does not exist in mapping: ${col.schema}`
+        `Schema referenced in config does not exist in mapping: ${col.schema}`,
       );
       process.exit(1);
     }

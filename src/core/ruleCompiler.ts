@@ -1,47 +1,45 @@
 //src/core/ruleCompiler.ts
+
+// interface
 export interface FieldMeta {
   type: string;
   required: boolean;
   enum?: string[];
+  ref?: string;
   fields?: Record<string, FieldMeta>;
+  min?: number;
+  max?: number;
+  regex?: string;
+  nullable?: boolean;
+  hasComplexCheck?: boolean;
+  complexCheckWarning?: string;
 }
 
-/**
- * buildRequiredCheck
- * - schemaFuncName: vollständiger Funktionsname, z.B. "hasRequired_ProjectStateSchema"
- * - fields: feld-meta (kann nested enthalten)
- * - ownerField?: optional, füge Owner-Feld zur Top-Level-Whitelist hinzu
- *
- * Liefert Array<string> Lines (keine zusätzliche Indentierung).
- */
+// --- function to build required check ---
 export function buildRequiredCheck(
   schemaFuncName: string,
   fields: Record<string, FieldMeta>,
-  ownerField?: string
+  ownerField?: string,
 ): string[] {
   const lines: string[] = [];
-  const topFields = Object.keys(fields);
 
-  const whitelist = [...topFields];
-  if (ownerField && !whitelist.includes(ownerField)) whitelist.push(ownerField);
-
-  // Top-Level whitelist
-  if (whitelist.length) {
-    lines.push(`function ${schemaFuncName}_hasOnlyTopLevel() {`);
-    lines.push(
-      `  return request.resource.data.keys().hasOnly([${whitelist
-        .map((f) => `"${f}"`)
-        .join(", ")}]);`
-    );
-    lines.push(`}`);
+  // function to build presence check
+  function buildPresenceExpr(prefix: string): string {
+    const parts = prefix.slice(1).split(".");
+    if (parts.length === 1) {
+      return `request.resource.data.keys().has("${parts[0]}")`;
+    }
+    const parent = parts.slice(0, -1).join(".");
+    const leaf = parts[parts.length - 1];
+    return `request.resource.data.${parent}.keys().has("${leaf}")`;
   }
 
-  // Recursive Field Checks
+  // function to build field check
   function buildFieldExpr(prefix: string, meta: FieldMeta): string {
     const expr = `request.resource.data${prefix}`;
     const checks: string[] = [];
+    const presence = buildPresenceExpr(prefix);
 
-    // Typprüfung
     switch (meta.type) {
       case "string":
         checks.push(`${expr} is string`);
@@ -63,36 +61,70 @@ export function buildRequiredCheck(
         break;
     }
 
-    // Enum
-    if (meta.enum?.length)
-      checks.push(`${expr} in [${meta.enum.map((v) => `"${v}"`).join(", ")}]`);
+    if (meta.enum?.length) {
+      const vals = meta.enum.map((v) => JSON.stringify(v)).join(", ");
+      checks.push(`${expr} in [${vals}]`);
+    }
 
-    // Nested Fields
-    if (meta.fields && Object.keys(meta.fields).length) {
+    if (meta.type === "number") {
+      if (meta.min !== undefined) checks.push(`${expr} >= ${meta.min}`);
+      if (meta.max !== undefined) checks.push(`${expr} <= ${meta.max}`);
+    }
+
+    if (meta.type === "string") {
+      if (meta.min !== undefined) checks.push(`${expr}.size() >= ${meta.min}`);
+      if (meta.max !== undefined) checks.push(`${expr}.size() <= ${meta.max}`);
+    }
+
+    if (meta.type === "string" && meta.regex) {
+      const raw = meta.regex.replace(/^\/|\/[a-z]*$/g, "");
+      checks.push(`${expr}.matches(${JSON.stringify(raw)})`);
+    }
+
+    if (checks.length === 0) {
+      return meta.required ? presence : "";
+    }
+
+    // Nested fields — only for objects no arrays
+    if (meta.type === "object" && meta.fields) {
       for (const [k, v] of Object.entries(meta.fields)) {
         checks.push(buildFieldExpr(`${prefix}.${k}`, v));
       }
     }
 
-    const presence = `request.resource.data.keys().has("${prefix.slice(1)}")`;
+    const filtered = checks.filter(Boolean);
+    const typeCheck = filtered.join(" && ");
+
+    let inner: string;
+    if (meta.nullable) {
+      inner = typeCheck
+        ? `(${expr} == null || (${typeCheck}))`
+        : `${expr} == null`;
+    } else {
+      inner = typeCheck;
+    }
+
+    if (!inner) {
+      return meta.required ? presence : "";
+    }
     return meta.required
-      ? `(${presence} && ${checks.join(" && ")})`
-      : `(!${presence} || (${checks.join(" && ")}))`;
+      ? `(${presence} && ${inner})`
+      : `(!${presence} || ${inner})`;
   }
 
-  const fieldExprs = Object.entries(fields).map(([k, v]) =>
-    buildFieldExpr(`.${k}`, v)
-  );
+  const fieldExprs = Object.entries(fields)
+    .map(([k, v]) => buildFieldExpr(`.${k}`, v))
+    .filter(Boolean);
 
   lines.push(`function ${schemaFuncName}() {`);
   if (fieldExprs.length) {
-    lines.push(`  return (${fieldExprs.join(" && ")})`);
+    lines.push(`  return (${fieldExprs.join(" && ")});`);
   } else if (ownerField) {
     lines.push(
-      `  return request.resource.data.${ownerField} == request.auth.uid`
+      `  return request.resource.data.${ownerField} == request.auth.uid;`,
     );
   } else {
-    lines.push(`  return true`);
+    lines.push(`  return true;`);
   }
   lines.push(`}`);
 
