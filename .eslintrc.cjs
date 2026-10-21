@@ -12,5 +12,16 @@ module.exports = {
   plugins: ["import", "node", "promise"],
   rules: {
     "no-console": "off",
+    quotes: ["error", "single"],
   },
+  overrides: [
+    {
+      files: [".eslintrc.cjs"],
+      rules: {
+        "comma-dangle": "off",
+        quotes: "off",
+        semi: "off",
+      },
+    },
+  ],
 };
