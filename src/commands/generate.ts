@@ -271,12 +271,12 @@ async function generateCommand(options: GenerateOpts) {
 
     const readExpr = allow.read ? authCheck : "false";
     const listExpr = allow.list ? authCheck : "false";
-    const createExpr = allow.create
-      ? `${authCheck} && ${validatorsExpr}`
-      : "false";
-    const updateExpr = allow.update
-      ? `${authCheck} && ${validatorsExpr}`
-      : "false";
+
+    const withValidators = (base: string) =>
+      allValidators.length ? `${base} && ${validatorsExpr}` : base;
+
+    const createExpr = allow.create ? withValidators(authCheck) : "false";
+    const updateExpr = allow.update ? withValidators(authCheck) : "false";
     const deleteExpr = allow.delete ? authCheck : "false";
 
     lines.push(`${pad}  allow read:   if ${readExpr};`);

@@ -1,7 +1,6 @@
 // src/core/structureDiscovery.ts
 
 const { Project, SyntaxKind } = require("ts-morph");
-
 export interface DiscoveredCollection {
   path: string; // e.g. "Users/{uid}"
   children: DiscoveredCollection[];
@@ -137,6 +136,13 @@ export function discoverStructure(pattern: string): DiscoveryResult {
   const project = new Project({ tsConfigFilePath: "tsconfig.json" });
   project.addSourceFilesAtPaths(pattern);
 
+  // Match any node_modules folder anywhere in the tree — handles the
+  // top-level one plus nested ones like functions/node_modules and
+  // emulator-tests/node_modules. ts-morph returns forward slashes on
+  // every platform, so the leading/trailing slash form is safe.
+  const isInsideNodeModules = (filePath: string): boolean =>
+    filePath.includes("/node_modules/");
+
   const rawPaths: string[][] = [];
   const warnings: string[] = [];
   let filesScanned = 0;
@@ -144,6 +150,8 @@ export function discoverStructure(pattern: string): DiscoveryResult {
   let collectionCallsFound = 0;
 
   for (const sf of project.getSourceFiles(pattern)) {
+    if (isInsideNodeModules(sf.getFilePath())) continue;
+
     filesScanned++;
     const calls = sf.getDescendantsOfKind(SyntaxKind.CallExpression);
 

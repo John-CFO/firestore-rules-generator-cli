@@ -49,6 +49,47 @@ function toConfigNode(node: any, isRoot: boolean): any {
   return config;
 }
 
+function printAvailableSchemas(outFile: string): void {
+  const mappingPath = path.resolve(".zod-mapping.json");
+
+  if (!fs.existsSync(mappingPath)) {
+    console.log("");
+    console.log(
+      chalk.yellow(
+        `${figures.warning} No .zod-mapping.json found. Run "frcli scan-zod" first to see available schemas.`,
+      ),
+    );
+    return;
+  }
+
+  const mapping = JSON.parse(fs.readFileSync(mappingPath, "utf-8"));
+  const schemaNames = Object.keys(mapping);
+
+  if (schemaNames.length === 0) return;
+
+  console.log("");
+  console.log(
+    chalk.blue(`${figures.info} Available schemas from .zod-mapping.json:`),
+  );
+  for (const name of schemaNames) {
+    const fields = Object.keys(mapping[name].fields || {}).length;
+    const manual = Object.keys(mapping[name].requiresManual || {}).length;
+    const suffix = manual > 0 ? ` (${manual} require manual)` : "";
+    console.log(chalk.blue(`  - ${name} (${fields} fields${suffix})`));
+  }
+  console.log("");
+  console.log(
+    chalk.blue(
+      `${figures.info} Replace REPLACE_WITH_SCHEMA_NAME in ${path.basename(outFile)} with one of the above.`,
+    ),
+  );
+  console.log(
+    chalk.blue(
+      `${figures.info} Omit the "schema" field for collections without an @AppSec schema.`,
+    ),
+  );
+}
+
 async function discoverCommand(opts: DiscoverOpts) {
   const pattern = opts.pattern || "**/*.{ts,tsx}";
   const outFile = path.resolve(opts.out || "rules.config.json.suggested");
@@ -109,6 +150,8 @@ async function discoverCommand(opts: DiscoverOpts) {
       console.log(chalk.yellow(`  - ${w}`)),
     );
   }
+
+  printAvailableSchemas(outFile);
 
   return { outFile, discovered: result.collections.length };
 }
