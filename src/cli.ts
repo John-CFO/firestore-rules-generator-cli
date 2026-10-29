@@ -38,14 +38,16 @@ function wrapAction(
   };
 }
 
-// --- Commands ---
+// --- Commands (registered in workflow order) ---
+
 program
   .command("init")
+  .description("Create a template rules.config.json in the current directory.")
   .option("-o, --out <file>", "output file", "rules.config.json")
   .action(
     wrapAction(_initCommand, "Template config created", [
       "Adjust 'collections' and 'subcollections' to match your backend hierarchy",
-      "Each entry should have a path (Firestore path), schema (from scan-zod output), optional ownerField/customChecks",
+      "Each entry should have a path (Firestore path), schema (from scan-zod output), optional ownerField",
     ]),
   );
 
@@ -68,30 +70,6 @@ program
   );
 
 program
-  .command("validate")
-  .option("-c, --config <file>", "config file", "rules.config.json")
-  .option("-m, --mapping <file>", "mapping file", ".zod-mapping.json")
-  .action(
-    wrapAction(_validateCommand, "Validation passed ✅", [
-      "Ensure referenced schemas exist in the mapping file",
-      "Fix any missing or misconfigured collections before generating rules",
-    ]),
-  );
-
-program
-  .command("generate")
-  .option("-c, --config <file>", "config file", "rules.config.json")
-  .option("-m, --mapping <file>", "mapping file", ".zod-mapping.json")
-  .option("-o, --out <file>", "output rules", "firestore.rules")
-  .action(
-    wrapAction(_generateCommand, "Firestore rules generated", [
-      "Output written to firestore.rules",
-      "Check warnings about optional fields and enums in the console",
-      "Ensure your backend collections/subcollections match the config",
-    ]),
-  );
-
-program
   .command("discover")
   .description(
     "Scan source files for Firestore doc()/collection() calls and suggest a rules.config.json structure.\n" +
@@ -106,6 +84,36 @@ program
       "Adjust allow flags per collection",
       "Merge into rules.config.json",
       "Run: frcli validate && frcli generate",
+    ]),
+  );
+
+program
+  .command("validate")
+  .description(
+    "Check that all schemas referenced in rules.config.json exist in .zod-mapping.json.",
+  )
+  .option("-c, --config <file>", "config file", "rules.config.json")
+  .option("-m, --mapping <file>", "mapping file", ".zod-mapping.json")
+  .action(
+    wrapAction(_validateCommand, "Validation passed ✅", [
+      "Ensure referenced schemas exist in the mapping file",
+      "Fix any missing or misconfigured collections before generating rules",
+    ]),
+  );
+
+program
+  .command("generate")
+  .description(
+    "Generate firestore.rules from rules.config.json and .zod-mapping.json.",
+  )
+  .option("-c, --config <file>", "config file", "rules.config.json")
+  .option("-m, --mapping <file>", "mapping file", ".zod-mapping.json")
+  .option("-o, --out <file>", "output rules", "firestore.rules")
+  .action(
+    wrapAction(_generateCommand, "Firestore rules generated", [
+      "Output written to firestore.rules",
+      "Check warnings about optional fields and enums in the console",
+      "Ensure your backend collections/subcollections match the config",
     ]),
   );
 
