@@ -589,12 +589,23 @@ function parseRawZod(raw: string): {
 }
 
 // Extract Zod schemas from project
-function extractSchemas(pattern: string): ParsedSchema[] {
+function extractSchemas(
+  pattern: string,
+  onProgress?: (current: number, total: number) => void,
+): ParsedSchema[] {
   const project = new Project({ tsConfigFilePath: "tsconfig.json" });
   project.addSourceFilesAtPaths(pattern);
   const output: ParsedSchema[] = [];
 
-  for (const sf of project.getSourceFiles(pattern)) {
+  const sourceFiles = project
+    .getSourceFiles(pattern)
+    .filter((sf: any) => !sf.getFilePath().includes("/node_modules/"));
+  let index = 0;
+
+  for (const sf of sourceFiles) {
+    index++;
+    if (onProgress) onProgress(index, sourceFiles.length);
+
     for (const stmt of sf.getVariableStatements()) {
       if (!stmt.hasExportKeyword()) continue;
 

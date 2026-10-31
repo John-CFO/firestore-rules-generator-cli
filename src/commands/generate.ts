@@ -198,6 +198,15 @@ async function generateCommand(options: GenerateOpts) {
   // process collection
   function processCollection(col: any, indent = 4) {
     const pad = " ".repeat(indent);
+
+    const depth = (indent - 4) / 2;
+    const schemaLabel = col.schema || "(no schema)";
+    console.log(
+      chalk.blue(
+        `${figures.info} ${"  ".repeat(depth)}${col.path} → ${schemaLabel}`,
+      ),
+    );
+
     lines.push(`${pad}match /${col.path} {`);
 
     let allValidators: string[] = [];

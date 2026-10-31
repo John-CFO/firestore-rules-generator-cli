@@ -107,7 +107,19 @@ async function discoverCommand(opts: DiscoverOpts) {
   );
   console.log(chalk.blue(`Pattern: ${pattern}`));
 
-  const result = discoverStructure(pattern);
+  let lastReportedAt = 0;
+  const result = discoverStructure(
+    pattern,
+    (current: number, total: number) => {
+      const step = Math.max(Math.floor(total / 5), 25);
+      if (current - lastReportedAt >= step && current < total) {
+        lastReportedAt = current;
+        console.log(
+          chalk.blue(`${figures.info} Scanned ${current}/${total} files...`),
+        );
+      }
+    },
+  );
 
   console.log(chalk.blue(`Files scanned: ${result.filesScanned}`));
   console.log(chalk.blue(`doc() calls: ${result.docCallsFound}`));

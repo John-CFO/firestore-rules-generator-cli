@@ -132,7 +132,10 @@ function buildTree(paths: string[][]): DiscoveredCollection[] {
   return roots;
 }
 
-export function discoverStructure(pattern: string): DiscoveryResult {
+export function discoverStructure(
+  pattern: string,
+  onProgress?: (current: number, total: number) => void,
+): DiscoveryResult {
   const project = new Project({ tsConfigFilePath: "tsconfig.json" });
   project.addSourceFilesAtPaths(pattern);
 
@@ -145,14 +148,21 @@ export function discoverStructure(pattern: string): DiscoveryResult {
 
   const rawPaths: string[][] = [];
   const warnings: string[] = [];
-  let filesScanned = 0;
   let docCallsFound = 0;
   let collectionCallsFound = 0;
 
-  for (const sf of project.getSourceFiles(pattern)) {
+  const sourceFiles = project
+    .getSourceFiles(pattern)
+    .filter((sf: any) => !isInsideNodeModules(sf.getFilePath()));
+
+  let index = 0;
+
+  for (const sf of sourceFiles) {
+    index++;
+    if (onProgress) onProgress(index, sourceFiles.length);
+
     if (isInsideNodeModules(sf.getFilePath())) continue;
 
-    filesScanned++;
     const calls = sf.getDescendantsOfKind(SyntaxKind.CallExpression);
 
     for (const call of calls) {
@@ -194,7 +204,7 @@ export function discoverStructure(pattern: string): DiscoveryResult {
 
   return {
     collections,
-    filesScanned,
+    filesScanned: sourceFiles.length,
     docCallsFound,
     collectionCallsFound,
     uniquePaths: unique.size,

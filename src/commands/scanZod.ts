@@ -9,6 +9,8 @@ const figures = require("figures");
 export interface ScanOpts {
   pattern: string;
   out: string;
+  current: number;
+  total: number;
 }
 
 // imported modules
@@ -25,7 +27,16 @@ async function scanZodCommand(options: { pattern?: string; out?: string }) {
   );
   console.log(chalk.blue(`Pattern: ${pattern}`));
 
-  const schemas = extractSchemas(pattern);
+  let lastReportedAt = 0;
+  const schemas = extractSchemas(pattern, (current: number, total: number) => {
+    const step = Math.max(Math.floor(total / 5), 25);
+    if (current - lastReportedAt >= step && current < total) {
+      lastReportedAt = current;
+      console.log(
+        chalk.blue(`${figures.info} Scanned ${current}/${total} files...`),
+      );
+    }
+  });
 
   console.log(
     chalk.green(`${figures.tick} Found ${schemas.length} Zod schemas`),
