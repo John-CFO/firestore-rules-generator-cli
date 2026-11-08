@@ -25,6 +25,8 @@ interface ParsedSchema {
   fields: Record<string, ParsedField>;
   raw: string;
   strict?: boolean;
+  collection?: string;
+  sourceFile?: string;
   requiresManual?: Record<string, ParsedField>;
 }
 
@@ -610,11 +612,19 @@ function extractSchemas(
       if (!stmt.hasExportKeyword()) continue;
 
       const jsDocs = stmt.getJsDocs();
-      const hasAppSec = jsDocs.some((d: TsMorphNode) =>
-        d.getTags?.().some((t: TsMorphNode) => t.getTagName?.() === "AppSec"),
-      );
+      const allTags = jsDocs.flatMap((d: TsMorphNode) => d.getTags?.() || []);
 
+      const hasAppSec = allTags.some(
+        (t: TsMorphNode) => t.getTagName?.() === "AppSec",
+      );
       if (!hasAppSec) continue;
+
+      const collectionTag = allTags.find(
+        (t: TsMorphNode) => t.getTagName?.() === "Collection",
+      );
+      const collection = collectionTag?.getCommentText?.()?.trim();
+
+      const sourceFile = sf.getFilePath();
 
       for (const decl of stmt.getDeclarations()) {
         const init = decl.getInitializer();
@@ -659,6 +669,8 @@ function extractSchemas(
           name: name,
           fields,
           strict,
+          collection,
+          sourceFile,
           raw,
           requiresManual,
         });

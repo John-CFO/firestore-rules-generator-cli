@@ -11,6 +11,42 @@ export interface DiscoverOpts {
   out?: string;
 }
 
+interface SchemaMapping {
+  [schemaName: string]: {
+    collection?: string;
+    sourceFile?: string;
+    fields?: Record<string, any>;
+    requiresManual?: Record<string, any>;
+  };
+}
+
+interface AssignmentReport {
+  autoAssigned: Array<{ path: string; schema: string }>;
+  needsManual: Array<{ path: string }>;
+}
+
+function loadMapping(): SchemaMapping {
+  const mappingPath = path.resolve(".zod-mapping.json");
+  if (!fs.existsSync(mappingPath)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(mappingPath, "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+function findSchemaForCollection(
+  collectionName: string,
+  mapping: SchemaMapping,
+): string | undefined {
+  for (const [schemaName, def] of Object.entries(mapping)) {
+    if (def.collection === collectionName) {
+      return schemaName;
+    }
+  }
+  return undefined;
+}
+
 function detectOwnerField(docVar: string): string {
   if (["uid", "userId", "ownerId", "owner"].includes(docVar)) {
     return docVar;
@@ -19,12 +55,18 @@ function detectOwnerField(docVar: string): string {
   return docVar;
 }
 
-function toConfigNode(node: any, isRoot: boolean): any {
+function toConfigNode(
+  node: any,
+  isRoot: boolean,
+  mapping: SchemaMapping,
+  report: AssignmentReport,
+): any {
   const match = node.path.match(/^([^/]+)\/\{(\w+)\}$/);
   if (!match) {
     throw new Error(`Unexpected path format: ${node.path}`);
   }
   const docVar = match[2];
+  const collectionName = match[1];
 
   const config: any = { path: node.path };
 
@@ -32,7 +74,16 @@ function toConfigNode(node: any, isRoot: boolean): any {
     config.ownerField = detectOwnerField(docVar);
   }
 
-  config.schema = "REPLACE_WITH_SCHEMA_NAME";
+  // Auto-assign from @Collection tag
+  const autoSchema = findSchemaForCollection(collectionName, mapping);
+  if (autoSchema) {
+    config.schema = autoSchema;
+    report.autoAssigned.push({ path: node.path, schema: autoSchema });
+  } else {
+    config.schema = "REPLACE_WITH_SCHEMA_NAME";
+    report.needsManual.push({ path: node.path });
+  }
+
   config.allow = {
     read: true,
     create: false,
@@ -42,7 +93,7 @@ function toConfigNode(node: any, isRoot: boolean): any {
 
   if (node.children.length > 0) {
     config.subcollections = node.children.map((c: any) =>
-      toConfigNode(c, false),
+      toConfigNode(c, false, mapping, report),
     );
   }
 
@@ -75,7 +126,10 @@ function printAvailableSchemas(outFile: string): void {
     const fields = Object.keys(mapping[name].fields || {}).length;
     const manual = Object.keys(mapping[name].requiresManual || {}).length;
     const suffix = manual > 0 ? ` (${manual} require manual)` : "";
-    console.log(chalk.blue(`  - ${name} (${fields} fields${suffix})`));
+    const tagged = mapping[name].collection
+      ? chalk.green(` [@Collection ${mapping[name].collection}]`)
+      : "";
+    console.log(chalk.blue(`  - ${name} (${fields} fields${suffix})`) + tagged);
   }
   console.log("");
   console.log(
@@ -138,9 +192,12 @@ async function discoverCommand(opts: DiscoverOpts) {
     return { outFile: null, discovered: 0 };
   }
 
+  const mapping = loadMapping();
+  const report: AssignmentReport = { autoAssigned: [], needsManual: [] };
+
   const config = {
     collections: result.collections.map((node: unknown) =>
-      toConfigNode(node, true),
+      toConfigNode(node, true, mapping, report),
     ),
   };
 
@@ -161,6 +218,26 @@ async function discoverCommand(opts: DiscoverOpts) {
     result.warnings.forEach((w: string) =>
       console.log(chalk.yellow(`  - ${w}`)),
     );
+  }
+
+  if (report.autoAssigned.length > 0) {
+    console.log("");
+    console.log(
+      chalk.green(`${figures.tick} Auto-assigned from @Collection tags:`),
+    );
+    for (const item of report.autoAssigned) {
+      console.log(chalk.green(`  ${item.path} → ${item.schema}`));
+    }
+  }
+
+  if (report.needsManual.length > 0) {
+    console.log("");
+    console.log(
+      chalk.yellow(`${figures.warning} Still needs manual schema assignment:`),
+    );
+    for (const item of report.needsManual) {
+      console.log(chalk.yellow(`  ${item.path}`));
+    }
   }
 
   printAvailableSchemas(outFile);

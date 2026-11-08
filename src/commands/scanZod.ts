@@ -63,6 +63,8 @@ async function scanZodCommand(options: { pattern?: string; out?: string }) {
     }
 
     output[schema.name] = {
+      collection: schema.collection || undefined,
+      sourceFile: schema.sourceFile || undefined,
       fields: schema.fields,
       strict: schema.strict === true,
       raw: schema.raw,
