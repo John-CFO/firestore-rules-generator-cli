@@ -27,11 +27,11 @@ export function buildRequiredCheck(
   function buildPresenceExpr(prefix: string): string {
     const parts = prefix.slice(1).split(".");
     if (parts.length === 1) {
-      return `request.resource.data.keys().has("${parts[0]}")`;
+      return `"${parts[0]}" in request.resource.data`;
     }
     const parent = parts.slice(0, -1).join(".");
     const leaf = parts[parts.length - 1];
-    return `request.resource.data.${parent}.keys().has("${leaf}")`;
+    return `"${leaf}" in request.resource.data.${parent}`;
   }
 
   // function to build field check
@@ -109,7 +109,7 @@ export function buildRequiredCheck(
     }
     return meta.required
       ? `(${presence} && ${inner})`
-      : `(!${presence} || ${inner})`;
+      : `(!(${presence}) || ${inner})`;
   }
 
   const fieldExprs = Object.entries(fields)
