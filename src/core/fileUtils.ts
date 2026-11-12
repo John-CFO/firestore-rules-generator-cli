@@ -1,34 +1,42 @@
 //src/core/fileUtils.ts
-export {};
 
+// imported modules
 const fs = require("fs");
 const path = require("path");
 
-// ---- Typen ----
-type JSONValue = any; // Falls du hier strenger willst, sag’s.
+// typing
+export type JSONValue = any;
 
-// ---- Funktionen ----
+// --- Functions ---
 
+// read JSON file and return
 function readJSONGen(filePath: string): JSONValue {
   const full = path.resolve(filePath);
-  const data = fs.readFileSync(full, "utf8");
-  return JSON.parse(data);
+  if (!fs.existsSync(full)) {
+    throw new Error(`File not found: ${full}`);
+  }
+  try {
+    return JSON.parse(fs.readFileSync(full, "utf8"));
+  } catch (e: any) {
+    throw new Error(`Invalid JSON in ${full}: ${e.message}`);
+  }
 }
 
+// alias
+const readJSON = readJSONGen;
+
+// is file exists
 function fileExists(filePath: string): boolean {
   return fs.existsSync(path.resolve(filePath));
 }
 
+// write JSON file and
 function writeJSON(filePath: string, data: JSONValue): void {
   fs.writeFileSync(
     path.resolve(filePath),
     JSON.stringify(data, null, 2),
-    "utf8"
+    "utf8",
   );
 }
 
-module.exports = {
-  readJSONGen,
-  fileExists,
-  writeJSON,
-};
+module.exports = { readJSONGen, readJSON, fileExists, writeJSON };
