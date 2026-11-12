@@ -61,7 +61,7 @@ function toConfigNode(
   mapping: SchemaMapping,
   report: AssignmentReport,
 ): any {
-  const match = node.path.match(/^([^/]+)\/\{(\w+)\}$/);
+  const match = node.path.match(/^([A-Za-z][A-Za-z0-9_]*)\/\{(\w+)\}$/);
   if (!match) {
     throw new Error(`Unexpected path format: ${node.path}`);
   }

@@ -99,10 +99,23 @@ function mergePath(existing: string[], incoming: string[]): string[] {
   return merged;
 }
 
-function buildTree(paths: string[][]): DiscoveredCollection[] {
+function buildTree(
+  paths: string[][],
+  warnings: string[],
+): DiscoveredCollection[] {
   const roots: DiscoveredCollection[] = [];
 
   for (const segments of paths) {
+    // Root-Collection-Name prüfen, bevor irgendetwas gebaut wird
+    const rootCollectionName = segments[0];
+    if (rootCollectionName.startsWith("{")) {
+      warnings.push(
+        `Dynamic collection name ignored: "${segments.join("/")}". ` +
+          `Refactor to a static collection name, or add it manually to rules.config.json.`,
+      );
+      continue;
+    }
+
     let siblings = roots;
     for (let i = 0; i < segments.length - 1; i += 2) {
       const collectionName = segments[i];
@@ -200,7 +213,7 @@ export function discoverStructure(
     }
   }
 
-  const collections = buildTree(Array.from(unique.values()));
+  const collections = buildTree(Array.from(unique.values()), warnings);
 
   return {
     collections,
