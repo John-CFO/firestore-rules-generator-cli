@@ -61,23 +61,62 @@ All generated comments are ASCII so they remain readable in any console and any 
 
 Prerequisite: Node.js 20+, a project with `tsconfig.json`.
 
-As a devDependency in the target project:
+`frcli` is distributed via GitHub (no npm registry release yet). Pick one of the two paths below.
+
+### Option A — install directly from GitHub (recommended)
+
+Install as a devDependency in the target project straight from the repository:
 
 ```powershell
 cd C:\Path\to\my-project
-npm install --save-dev C:\Path\to\firestore-rules-cli
+npm install --save-dev github:John-CFO/firestore-rules-generator-cli
 ```
 
-Or via `npm link` for live development on the CLI:
+Pin a tag or commit for reproducible installs:
 
 ```powershell
-cd C:\Path\to\firestore-rules-cli
+npm install --save-dev github:John-CFO/firestore-rules-generator-cli#v1.0.0
+```
+
+The `git+https://` form works as well:
+
+```powershell
+npm install --save-dev git+https://github.com/John-CFO/firestore-rules-generator-cli.git
+```
+
+For git dependencies npm clones the repository and runs the `prepare` script. **The package must define `"prepare": "npm run build"` (or an equivalent build step)** — otherwise `dist/cli.js` is missing and `frcli` fails with `Cannot find module`. If the package does not have a `prepare` script, use Option B.
+
+### Option B — clone, build, link (for live development)
+
+Use this when you work on the CLI itself, or when Option A fails because of a missing `prepare` script.
+
+```powershell
+# 1. Clone and build the CLI
+cd C:\Path\to
+git clone https://github.com/John-CFO/firestore-rules-generator-cli.git
+cd firestore-rules-generator-cli
 npm install
 npm run build
+
+# 2. Register the global bin
 npm link
 
+# 3. Link it into the target project
 cd C:\Path\to\my-project
 npm link firestore-rules-cli
+```
+
+Note: the repository is named `firestore-rules-generator-cli`, but the npm package (and therefore the name used with `npm link`) is `firestore-rules-cli`. Both refer to the same project.
+
+`npm link` creates a symlink, so a rebuild in the CLI repo (`npm run build`) is immediately visible in the target project.
+
+To remove the link later:
+
+```powershell
+cd C:\Path\to\my-project
+npm unlink --no-save firestore-rules-cli
+cd C:\Path\to\firestore-rules-cli
+npm unlink -g firestore-rules-cli
 ```
 
 ### Install `firebase-tools` locally (for the deploy workflow)
@@ -99,13 +138,12 @@ From the target project:
 npm exec -- frcli --help
 ```
 
-Directly from the CLI repo (without `npm link`):
+If you used Option B, you can also run it directly from the CLI repo:
 
 ```powershell
+cd C:\Path\to\firestore-rules-cli
 node dist/cli.js --help
 ```
-
----
 
 ## 4. Commands
 
@@ -565,6 +603,17 @@ The CLI uses CommonJS. `figures` must be installed in version 3.x, `chalk` in ve
 ```powershell
 npm install chalk@4 figures@3.2.0
 ```
+
+### `Cannot find module '.../firestore-rules-cli/dist/cli.js'` after installing from GitHub
+
+npm clones git dependencies into `node_modules` and runs the `prepare` script. If `prepare` is missing or fails, `dist/` is never built. Fixes:
+
+- In the CLI repo, add to `package.json`:
+  ```json
+  "scripts": { "prepare": "npm run build" }
+  ```
+- Reinstall in the target project: `npm install --save-dev github:John-CFO/firestore-rules-generator-cli`
+- Or fall back to Option B in Section 3 (clone + `npm run build` + `npm link`).
 
 ### `npm exec could not determine executable to run` (when calling `firebase`)
 
