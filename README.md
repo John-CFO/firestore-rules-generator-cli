@@ -28,7 +28,7 @@ The CLI does not replace Cloud Functions. It produces a starting point that forc
 
 ## 1. What the CLI does
 
-- **Discover**: scans source files for Firestore `doc()` / `collection()` calls via `ts-morph`, extracts the collection hierarchy, and writes a suggested config to `rules.config.json.suggested`. Conservative defaults: all schemas marked `REPLACE_WITH_SCHEMA_NAME`, all `allow` flags except `read` set to `false`. Does **not** overwrite `rules.config.json`. At the end of each run it lists every schema from `.zod-mapping.json` so the user knows what can be assigned where.
+- **Discover**: scans source files for Firestore `doc()` / `collection()` calls via `ts-morph`, extracts the collection hierarchy, and writes a suggested config to `rules.config.json.suggested`. Schemas carrying an `@Collection` tag are auto-assigned; every other collection gets `REPLACE_WITH_SCHEMA_NAME`. All `allow` flags except `read` are set to `false`. Does **not** overwrite `rules.config.json`. At the end of each run it lists every schema from `.zod-mapping.json` with its `@Collection` target (if any).
 - **Scan**: finds exported variables with the `@AppSec` JSDoc tag, parses their initializer via `ts-morph`, and extracts type, required status, nested objects, `min`/`max`, `regex`, `enum`, `nullable`, and `strict`.
 - **Validate**: checks that all schemas referenced in `rules.config.json` exist in the mapping. On failure it prints the full collection path for each missing schema and lists all available schemas. Collections without a `schema` field trigger a warning, not an error.
 - **Generate**: produces a `firestore.rules` file with:
@@ -50,7 +50,7 @@ All generated comments are ASCII so they remain readable in any console and any 
 - **Does not guess server fields.** Fields not in the Zod schema (e.g. `createdAt`, `updatedAt`, `uid`) do not appear in the rules. With `.strict()`, the user must add them manually to the `hasOnly` whitelist.
 - **No cross-document checks.** Rules such as "`projectId` must exist in `Projects/{projectId}`" cannot be expressed with Firestore rules alone.
 - **Not a Cloud Function replacement.** If the actual validation runs in Cloud Functions (the Admin SDK bypasses the rules entirely), the generated field checks are redundant. See Section 11.
-- **`discover` does not assign schemas to collections.** It cannot know that `PostSchema` belongs to `Posts/{postId}` — that is an application-level decision. The output uses `REPLACE_WITH_SCHEMA_NAME`; the user assigns each schema manually. `discover` lists available schemas at the end of its run.
+- **`discover` only auto-assigns schemas when the schema carries an `@Collection` tag.** Without the tag it falls back to `REPLACE_WITH_SCHEMA_NAME` and the user assigns manually. The `@Collection` value is a collection _name_ (`Posts`), not a path (`Posts/{postId}`); `discover` matches it against every node in the discovered tree, at any depth. `@Collection` does **not** change the discovered tree structure — that still comes from the `doc()` / `collection()` calls. It only decides which schema is attached to a node with that collection name. See §4 _Marking a schema with `@AppSec` and `@Collection`_.
 - **`discover` uses the parameter names found in code.** If your code uses `post.id`, the suggested path is `Posts/{id}`. If it uses `targetDay`, it is `WorkHours/{targetDay}`. The tool does not guess semantic names — rename them in `rules.config.json` if you prefer different identifiers. Firestore only cares about structure, not parameter names.
 - **`validate` only checks one direction.** It verifies that every `schema` referenced in the config exists in the mapping. It does **not** verify that every collection in your source code is present in the config. That direction is the responsibility of `discover` and manual review.
 - **No `customChecks` support.** The field is currently not processed. Custom conditions must be added manually to the generated file.
@@ -192,7 +192,7 @@ The command does **not** write to `rules.config.json` directly. It writes a `.su
 
 **What it does not do:**
 
-- Does not assign schemas. All collections get `"schema": "REPLACE_WITH_SCHEMA_NAME"`.
+- Does not assign schemas unless the schema carries an `@Collection` tag. Untagged collections get `"schema": "REPLACE_WITH_SCHEMA_NAME"` and are listed under _Still needs manual schema assignment_. See §4 _Marking a schema with `@AppSec` and `@Collection`_.
 - Does not set `allow` flags meaningfully. All default to `read: true`, rest `false`.
 - Does not resolve wrapper functions like `fetchPostsApi(userId)`. If the actual `doc()` call is inside the wrapper's implementation, the path is found when that file is scanned — but if the wrapper builds the path dynamically, it may be missed.
 
@@ -201,9 +201,17 @@ The command does **not** write to `rules.config.json` directly. It writes a `.su
 After writing the suggested config, `discover` prints every schema from `.zod-mapping.json` with field count and manual-check count:
 
 ```
+✅ Auto-assigned from @Collection tags:
+  Posts/{postId} → PostSchema
+  Posts/{postId}/Comments/{commentId} → CommentSchema
+
+⚠ Still needs manual schema assignment:
+  Reactions/{reactionId}
+
 ℹ Available schemas from .zod-mapping.json:
-  - PostSchema (7 fields)
-  - CommentSchema (3 fields (1 require manual))
+  - PostSchema (7 fields) [@Collection Posts]
+  - CommentSchema (3 fields (1 require manual)) [@Collection Comments]
+  - ReactionSchema (2 fields) [@Collection Reactions]
   ...
 ```
 
@@ -212,10 +220,67 @@ If `.zod-mapping.json` does not exist, it prints a single warning pointing to `s
 **Review checklist after running `discover`:**
 
 1. Every collection your app touches must appear in the output. If one is missing, the wrapper hiding it is too complex — add it manually.
-2. Replace `REPLACE_WITH_SCHEMA_NAME` with the correct schema from `.zod-mapping.json`.
+2. Replace `REPLACE_WITH_SCHEMA_NAME` with the correct schema from `.zod-mapping.json`. Collections already filled in from `@Collection` tags need no edit — verify them against the _Auto-assigned_ block, and add `@Collection` tags to the remaining schemas if you want them assigned automatically on the next `discover` run.
 3. Adjust `allow` flags per collection.
 4. Rename parameters (`{id}`, `{uid}`) if you prefer semantic names.
 5. Copy the result into `rules.config.json` and run `validate` → `generate`.
+
+### Marking a schema with `@AppSec` and `@Collection`
+
+Both tags live in the JSDoc block **directly above** an `export const` initializer. `@AppSec` is required — it marks the schema for scanning. `@Collection` is optional — it lets `discover` auto-assign the schema to a collection node.
+
+```ts
+// validation/post.schema.ts
+
+/**
+ * @AppSec
+ * @Collection Posts
+ */
+export const PostSchema = z
+  .object({
+    title: z.string().min(1).max(200),
+    body: z.string().min(1),
+    status: z.enum(["draft", "published"]),
+  })
+  .strict();
+
+/**
+ * @AppSec
+ * @Collection Comments
+ */
+export const CommentSchema = z.object({
+  text: z.string().min(1).max(1000),
+  postId: z.string(),
+});
+```
+
+- `@AppSec` alone → schema appears in `.zod-mapping.json`, `discover` writes `REPLACE_WITH_SCHEMA_NAME`.
+- `@AppSec` + `@Collection Posts` → `discover` fills in `PostSchema` for every node named `Posts`, any depth.
+- Value is the **collection name only** — `@Collection Posts`, not `@Collection Posts/{postId}`.
+- Duplicate `@Collection` names: first match wins. Keep values unique.
+- `@Collection` does not change the tree structure — only the schema attached to a node.
+
+Resulting `.zod-mapping.json` entry:
+
+```json
+{
+  "PostSchema": {
+    "collection": "Posts",
+    "fields": {
+      "title": { "type": "string", "required": true, "min": 1, "max": 200 },
+      "body": { "type": "string", "required": true, "min": 1 },
+      "status": {
+        "type": "string",
+        "required": true,
+        "enum": ["draft", "published"]
+      }
+    },
+    "strict": true,
+    "raw": "z.object({...}).strict()",
+    "requiresManual": {}
+  }
+}
+```
 
 ### `frcli validate [-c rules.config.json] [-m .zod-mapping.json]`
 
@@ -332,7 +397,7 @@ npm exec -- frcli discover
 
 This writes `rules.config.json.suggested`, which you then edit:
 
-1. Replace `REPLACE_WITH_SCHEMA_NAME` per collection with the correct schema from `.zod-mapping.json`. `discover` prints the list of available schemas at the end of its run; `validate` prints it again if a placeholder remains.
+1. Replace `REPLACE_WITH_SCHEMA_NAME` per collection with the correct schema from `.zod-mapping.json`. Collections whose schema carries an `@Collection` tag are already filled in by `discover`. For the rest, add `@Collection` tags to your schemas so the next run assigns them automatically, or edit the suggested config by hand. `discover` prints the list of available schemas at the end of its run; `validate` prints it again if a placeholder remains.
 2. Set `allow` flags per collection based on your access policy.
 3. Rename parameters (`{id}`, `{targetDay}`) if you prefer different names.
 4. Copy the result to `rules.config.json`.
@@ -348,6 +413,7 @@ Collections without an `@AppSec` schema (e.g. where validation happens in a Clou
 ```json
 {
   "PostSchema": {
+    "collection": "Posts",
     "fields": {
       "title": {
         "type": "string",
@@ -388,11 +454,12 @@ Collections without an `@AppSec` schema (e.g. where validation happens in a Clou
 
 ### Schema attributes
 
-| Attribute        | Type    | Meaning                                              |
-| ---------------- | ------- | ---------------------------------------------------- |
-| `strict`         | boolean | `true` if `.strict()` on the top-level object        |
-| `raw`            | string  | The original Zod expression (for traceability)       |
-| `requiresManual` | object  | All fields with `hasComplexCheck: true`, listed flat |
+| Attribute        | Type    | Meaning                                                                                                           |
+| ---------------- | ------- | ----------------------------------------------------------------------------------------------------------------- |
+| `collection`     | string  | Collection name from the `@Collection` tag. Used by `discover` for auto-assignment. Absent if the tag is not set. |
+| `strict`         | boolean | `true` if `.strict()` on the top-level object                                                                     |
+| `raw`            | string  | The original Zod expression (for traceability)                                                                    |
+| `requiresManual` | object  | All fields with `hasComplexCheck: true`, listed flat                                                              |
 
 ---
 
@@ -673,7 +740,7 @@ If `Files scanned` shows tens of thousands, something outside your source tree i
 
 ### `discover` output contains `REPLACE_WITH_SCHEMA_NAME`
 
-Expected. The command does not know which schema belongs to which collection — that's an application decision. See Section 5 for how to assign schemas. `discover` lists available schemas at the end of its run; `validate` lists them again on failure.
+Expected for collections whose schema does not carry an `@Collection` tag. Add `@Collection <CollectionName>` to the corresponding schema (see §4 _Marking a schema with `@AppSec` and `@Collection`_) and re-run `discover`, or edit `rules.config.json.suggested` manually. `discover` lists available schemas (with their `@Collection` targets) at the end of its run; `validate` lists them again on failure.
 
 ### `Dry run complete!` with many "Invalid function name: has" warnings
 
