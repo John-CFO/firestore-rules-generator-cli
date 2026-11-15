@@ -123,13 +123,42 @@ function printAvailableSchemas(outFile: string): void {
     chalk.blue(`${figures.info} Available schemas from .zod-mapping.json:`),
   );
   for (const name of schemaNames) {
-    const fields = Object.keys(mapping[name].fields || {}).length;
-    const manual = Object.keys(mapping[name].requiresManual || {}).length;
+    const def = mapping[name] || {};
+    const fields = Object.keys(def.fields || {}).length;
+    const manual = Object.keys(def.requiresManual || {}).length;
+
+    // Schema diagnosis: reveals which schemas cannot be used as an object-field schema
+    let shape = "";
+    if (def.requiresManual?.["<failed>"]) {
+      const warn =
+        def.requiresManual["<failed>"].complexCheckWarning || "unknown";
+      shape = chalk.red(` — PARSE FAILED: ${warn}`);
+    } else if (def.rootField) {
+      const r = def.rootField;
+      const parts = [`type=${r.type || "unknown"}`];
+      if (r.min !== undefined) parts.push(`min=${r.min}`);
+      if (r.max !== undefined) parts.push(`max=${r.max}`);
+      if (r.nullable) parts.push("nullable");
+      if (r.required === false) parts.push("optional");
+      shape = chalk.magenta(
+        ` — root schema (${parts.join(", ")}), no field mapping`,
+      );
+    } else if (def.requiresManual?.["<ref>"]) {
+      const r = def.requiresManual["<ref>"];
+      shape = chalk.yellow(` — unresolved ref → ${r.ref || "?"}`);
+    } else if (def.requiresManual?.["<root>"]) {
+      const warn =
+        def.requiresManual["<root>"].complexCheckWarning || "unknown";
+      shape = chalk.yellow(` — root-level complex: ${warn}`);
+    }
+
     const suffix = manual > 0 ? ` (${manual} require manual)` : "";
-    const tagged = mapping[name].collection
-      ? chalk.green(` [@Collection ${mapping[name].collection}]`)
+    const tagged = def.collection
+      ? chalk.green(` [@Collection ${def.collection}]`)
       : "";
-    console.log(chalk.blue(`  - ${name} (${fields} fields${suffix})`) + tagged);
+    console.log(
+      chalk.blue(`  - ${name} (${fields} fields${suffix})`) + shape + tagged,
+    );
   }
   console.log("");
   console.log(

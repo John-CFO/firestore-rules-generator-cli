@@ -13,12 +13,14 @@ type SchemaField = {
   max?: number;
   regex?: string;
   inList?: string[];
+  nullable?: boolean;
   hasComplexCheck?: boolean;
   complexCheckWarning?: string;
 };
 
 type SchemaDef = {
   fields?: Record<string, SchemaField>;
+  rootField?: SchemaField;
   createMode?: "strict" | "partial" | "replace" | "none";
   updateMode?: "strict" | "partial" | "replace" | "none";
 };
@@ -43,6 +45,26 @@ function flattenFields(
   visited.add(schemaName);
 
   const result: Record<string, SchemaField> = {};
+
+  // Primitive Root-Schema: has no object fields. No per-field validation can be generated
+  if (schemaDef.rootField) {
+    const r = schemaDef.rootField;
+    const desc = [
+      `type=${r.type || "unknown"}`,
+      r.min !== undefined ? `min=${r.min}` : "",
+      r.max !== undefined ? `max=${r.max}` : "",
+      r.nullable ? "nullable" : "",
+      r.required === false ? "optional" : "",
+    ]
+      .filter(Boolean)
+      .join(", ");
+    warnings.push(
+      `Schema '${schemaName}' is a primitive root (${desc}) with no target field — ` +
+        `no per-field validation can be generated.`,
+    );
+    return result;
+  }
+
   if (!schemaDef.fields) return result;
 
   for (const [key, rawVal] of Object.entries(schemaDef.fields)) {
@@ -222,6 +244,11 @@ async function generateCommand(options: GenerateOpts) {
         new Set(),
         warnings,
       );
+      // Output warnings from flattenFields and write them to the rules file
+      for (const w of warnings) {
+        console.warn(chalk.yellow(`${figures.warning} ${w}`));
+        lines.push(`${pad}  // WARNING: ${w}`);
+      }
 
       // Warn if the schema has no usable fields — otherwise the generated
       // hasRequired_* function silently returns true (or only checks the owner).
