@@ -26,6 +26,7 @@ interface ParsedSchema {
   raw: string;
   strict?: boolean;
   rootField?: ParsedField;
+  targetField?: string;
   collection?: string;
   sourceFile?: string;
   requiresManual?: Record<string, ParsedField>;

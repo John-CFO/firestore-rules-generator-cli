@@ -67,6 +67,7 @@ async function scanZodCommand(options: { pattern?: string; out?: string }) {
       sourceFile: schema.sourceFile || undefined,
       fields: schema.fields,
       strict: schema.strict === true,
+      rootField: schema.rootField,
       raw: schema.raw,
       requiresManual: schema.requiresManual || {},
     };
@@ -99,6 +100,47 @@ async function scanZodCommand(options: { pattern?: string; out?: string }) {
           `${figures.tick} All fields can be automatically processed`,
         ),
       );
+    }
+  }
+
+  // Preserve developer-provided targetField from an existing mapping.
+  // scanZod regenerates the file from scratch; without this merge, a
+  // manually assigned targetField would be lost on the next scan.
+  //
+  // If the existing file cannot be read or parsed, abort BEFORE writing.
+  // Overwriting a corrupt file would silently destroy manual mappings
+  // and leave the developer with no chance to recover them.
+  if (fs.existsSync(outFile)) {
+    let existing: Record<string, { targetField?: string }>;
+    try {
+      existing = JSON.parse(fs.readFileSync(outFile, "utf-8"));
+    } catch (err: any) {
+      console.error("");
+      console.error(
+        chalk.red(
+          `${figures.warning} Cannot read existing ${path.basename(outFile)}: ${err.message}`,
+        ),
+      );
+      console.error(
+        chalk.red(
+          `Aborting scan to avoid overwriting manually configured mappings.`,
+        ),
+      );
+      console.error(
+        chalk.red(`Fix or move ${path.basename(outFile)} and re-run scan-zod.`),
+      );
+      throw new Error(
+        `Refusing to overwrite unreadable ${path.basename(outFile)}`,
+      );
+    }
+
+    // Merge only targetField, only for schemas present in the new scan.
+    // Schemas no longer discovered are dropped (existing behavior).
+    for (const name of Object.keys(output)) {
+      const prev = existing[name]?.targetField;
+      if (prev && !output[name].targetField) {
+        output[name].targetField = prev;
+      }
     }
   }
 
