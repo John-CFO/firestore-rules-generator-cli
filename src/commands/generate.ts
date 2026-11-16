@@ -250,21 +250,22 @@ async function generateCommand(options: GenerateOpts) {
         lines.push(`${pad}  // WARNING: ${w}`);
       }
 
-      // Warn if the schema has no usable fields — otherwise the generated
-      // hasRequired_* function silently returns true (or only checks the owner).
+      // flattenFields returns {} without pushing a warning for empty
+      // object schemas (z.object({})) and for ref cycles. Catch those
+      // here so the user sees why no validator is generated. If
+      // flattenFields already pushed a specific warning (primitive
+      // root, unresolved ref), skip this generic one.
       const fieldCount = Object.keys(flatFields).length;
-      if (fieldCount === 0) {
+      if (fieldCount === 0 && warnings.length === 0) {
         const msg =
           `Schema '${col.schema}' has no parseable fields. ` +
-          `The generated hasRequired_${col.schema}() will not enforce any field validation.`;
+          `No hasRequired_${col.schema}() validator will be generated.`;
         console.warn(chalk.yellow(`${figures.warning} ${msg}`));
 
         // Also surface it inside the rules file so it's visible in review.
+        lines.push(`${pad}  // WARNING: ${msg}`);
         lines.push(
-          `${pad}  // WARNING: schema '${col.schema}' has no parseable fields.`,
-        );
-        lines.push(
-          `${pad}  // hasRequired_${col.schema}() only enforces the owner check.`,
+          `${pad}  // Ownership is enforced via isOwner(...) in the allow rules.`,
         );
       }
 
@@ -278,14 +279,18 @@ async function generateCommand(options: GenerateOpts) {
       );
       for (const l of block) lines.push(l);
 
-      const funcName = `hasRequired_${col.schema}`;
-      if (!generatedFunctions.has(funcName)) {
-        const checks = buildRequiredCheck(funcName, flatFields, col.ownerField);
-        for (const line of checks) lines.push(pad + "  " + line);
-        generatedFunctions.add(funcName);
+      // Only generate a validator when there is something to validate.
+      // Emitting `function hasRequired_X() { return true; }` would be a
+      // no-op validator that misleadingly suggests field validation.
+      if (fieldCount > 0) {
+        const funcName = `hasRequired_${col.schema}`;
+        if (!generatedFunctions.has(funcName)) {
+          const checks = buildRequiredCheck(funcName, flatFields);
+          for (const line of checks) lines.push(pad + "  " + line);
+          generatedFunctions.add(funcName);
+        }
+        allValidators.push(`${funcName}()`);
       }
-
-      allValidators.push(`${funcName}()`);
     }
 
     const validatorsExpr = allValidators.length
