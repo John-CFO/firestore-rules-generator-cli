@@ -21,6 +21,7 @@ type SchemaField = {
 type SchemaDef = {
   fields?: Record<string, SchemaField>;
   rootField?: SchemaField;
+  targetField?: string;
   createMode?: "strict" | "partial" | "replace" | "none";
   updateMode?: "strict" | "partial" | "replace" | "none";
 };
@@ -112,25 +113,34 @@ async function generateCommand(options: GenerateOpts) {
     const def = schemaDef as SchemaDef & {
       requiresManual?: Record<string, any>;
     };
-    if (def.requiresManual && Object.keys(def.requiresManual).length > 0) {
-      console.log(
-        chalk.yellow(
-          `${figures.warning} Schema '${schemaName}' has fields requiring manual implementation:`,
-        ),
-      );
+    if (!def.requiresManual) continue;
 
-      for (const [fieldPath, field] of Object.entries(
-        def.requiresManual || {},
-      )) {
-        const warning =
-          (field as any).complexCheckWarning || "Complex validation detected";
-        allManualChecks.push({
-          schema: schemaName,
-          field: fieldPath,
-          warning: warning,
-        });
-        console.log(chalk.yellow(`  - ${fieldPath}: ${warning}`));
-      }
+    // Primitive-root schema with an explicit targetField is no longer
+    // manual: processCollection() will generate a real validator for it.
+    // Drop the stale "<root>" entry so the user does not see
+    // "requires manual" next to auto-generated validation.
+    let requiresManual = def.requiresManual;
+    if (def.targetField && requiresManual["<root>"]) {
+      const { ["<root>"]: _removed, ...rest } = requiresManual;
+      requiresManual = rest;
+    }
+    if (Object.keys(requiresManual).length === 0) continue;
+
+    console.log(
+      chalk.yellow(
+        `${figures.warning} Schema '${schemaName}' has fields requiring manual implementation:`,
+      ),
+    );
+
+    for (const [fieldPath, field] of Object.entries(requiresManual)) {
+      const warning =
+        (field as any).complexCheckWarning || "Complex validation detected";
+      allManualChecks.push({
+        schema: schemaName,
+        field: fieldPath,
+        warning: warning,
+      });
+      console.log(chalk.yellow(`  - ${fieldPath}: ${warning}`));
     }
   }
 
@@ -237,13 +247,29 @@ async function generateCommand(options: GenerateOpts) {
       const schemaConfig = mapping[col.schema] as any;
 
       const warnings: string[] = [];
-      const flatFields = flattenFields(
-        col.schema,
-        schemaConfig,
-        mapping,
-        new Set(),
-        warnings,
-      );
+      let flatFields: Record<string, SchemaField>;
+
+      if (schemaConfig.rootField && schemaConfig.targetField) {
+        // Explicit mapping: developer assigned this primitive root
+        // schema to a concrete Firestore field. Wrap it as a single-field
+        // map so buildRequiredCheck() emits the rule using the same
+        // validation semantics as object-schema fields.
+        const rf = schemaConfig.rootField as SchemaField;
+        flatFields = {
+          [schemaConfig.targetField]: {
+            ...rf,
+            required: rf.required !== false,
+          },
+        };
+      } else {
+        flatFields = flattenFields(
+          col.schema,
+          schemaConfig,
+          mapping,
+          new Set(),
+          warnings,
+        );
+      }
       // Output warnings from flattenFields and write them to the rules file
       for (const w of warnings) {
         console.warn(chalk.yellow(`${figures.warning} ${w}`));
