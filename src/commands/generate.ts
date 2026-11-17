@@ -295,10 +295,26 @@ async function generateCommand(options: GenerateOpts) {
         );
       }
 
+      // When a primitive root schema has an explicit targetField, the
+      // <root> requiresManual entry is stale: a real validator is now
+      // generated for the mapped field. Pass a local copy with that
+      // entry removed to renderManualBlock(), without mutating the
+      // original mapping object.
+      let renderConfig = schemaConfig;
+      if (
+        schemaConfig.rootField &&
+        schemaConfig.targetField &&
+        schemaConfig.requiresManual &&
+        schemaConfig.requiresManual["<root>"]
+      ) {
+        const { ["<root>"]: _removed, ...rest } = schemaConfig.requiresManual;
+        renderConfig = { ...schemaConfig, requiresManual: rest };
+      }
+
       // Manual-block goes above the allow rules
       const block = renderManualBlock(
         col.schema,
-        schemaConfig,
+        renderConfig,
         flatFields,
         col.ownerField,
         pad + "  ",
