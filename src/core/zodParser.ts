@@ -672,6 +672,28 @@ function extractSchemas(
       );
       const collection = collectionTag?.getCommentText?.()?.trim();
 
+      // @FirestoreField explicitly maps a primitive-root schema to a
+      // Firestore document field. Only the developer can supply this;
+      // the CLI never infers it from application code.
+      const firestoreFieldTags = allTags.filter(
+        (t: TsMorphNode) => t.getTagName?.() === "FirestoreField",
+      );
+      let targetField: string | undefined;
+      if (firestoreFieldTags.length === 1) {
+        const val = firestoreFieldTags[0].getCommentText?.()?.trim();
+        if (val) {
+          targetField = val;
+        } else {
+          console.warn(
+            `⚠ @FirestoreField on schema in ${sf.getFilePath()}:${stmt.getStartLineNumber()} has no value — ignoring`,
+          );
+        }
+      } else if (firestoreFieldTags.length > 1) {
+        console.warn(
+          `⚠ Multiple @FirestoreField tags (${firestoreFieldTags.length}) in ${sf.getFilePath()}:${stmt.getStartLineNumber()} — ignoring all`,
+        );
+      }
+
       const sourceFile = sf.getFilePath();
 
       for (const decl of stmt.getDeclarations()) {
@@ -747,14 +769,19 @@ function extractSchemas(
           // that field validation is NOT possible here.
           rootField = parsed.field;
 
-          requiresManual["<root>"] = {
-            ...rootField,
-            hasComplexCheck: true,
-            complexCheckWarning:
-              rootField.complexCheckWarning ||
-              `Primitive root schema (type=${rootField.type}) cannot be ` +
-                `auto-mapped to a Firestore field. Provide an explicit target field.`,
-          };
+          // Only flag as manual when the developer has not supplied an
+          // explicit @FirestoreField mapping. With a targetField, the
+          // validator is generated automatically.
+          if (!targetField) {
+            requiresManual["<root>"] = {
+              ...rootField,
+              hasComplexCheck: true,
+              complexCheckWarning:
+                rootField.complexCheckWarning ||
+                `Primitive root schema (type=${rootField.type}) cannot be ` +
+                  `auto-mapped to a Firestore field. Provide an explicit target field.`,
+            };
+          }
         } else {
           // parsed.kind === "failed"
           requiresManual["<failed>"] = {
@@ -770,6 +797,7 @@ function extractSchemas(
           fields,
           strict,
           rootField,
+          targetField,
           collection,
           sourceFile,
           raw,

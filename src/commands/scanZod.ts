@@ -55,11 +55,26 @@ async function scanZodCommand(options: { pattern?: string; out?: string }) {
     console.log(`Raw Zod definition length: ${schema.raw.length} chars`);
 
     if (Object.keys(schema.fields).length === 0) {
-      console.log(
-        chalk.yellow(
-          `  ${figures.warning} Schema '${schema.name}' has no parseable fields (not an object schema?)`,
-        ),
-      );
+      if (schema.rootField && schema.targetField) {
+        console.log(
+          chalk.green(
+            `  ${figures.tick} Primitive root mapped to "${schema.targetField}" via @FirestoreField`,
+          ),
+        );
+      } else if (schema.rootField) {
+        console.log(
+          chalk.yellow(
+            `  ${figures.warning} Schema '${schema.name}' is a primitive root; ` +
+              `add @FirestoreField <fieldName> to map it to a Firestore field`,
+          ),
+        );
+      } else {
+        console.log(
+          chalk.yellow(
+            `  ${figures.warning} Schema '${schema.name}' has no parseable fields`,
+          ),
+        );
+      }
     }
 
     output[schema.name] = {
@@ -68,6 +83,7 @@ async function scanZodCommand(options: { pattern?: string; out?: string }) {
       fields: schema.fields,
       strict: schema.strict === true,
       rootField: schema.rootField,
+      targetField: schema.targetField,
       raw: schema.raw,
       requiresManual: schema.requiresManual || {},
     };
@@ -103,17 +119,17 @@ async function scanZodCommand(options: { pattern?: string; out?: string }) {
     }
   }
 
-  // Preserve developer-provided targetField from an existing mapping.
-  // scanZod regenerates the file from scratch; without this merge, a
-  // manually assigned targetField would be lost on the next scan.
+  // @FirestoreField in the source is the only source of truth for
+  // targetField. The mapping file is regenerated on every scan; any
+  // stale targetField in an existing file is dropped here. Manual
+  // edits no longer survive a rescan — use @FirestoreField instead.
   //
-  // If the existing file cannot be read or parsed, abort BEFORE writing.
-  // Overwriting a corrupt file would silently destroy manual mappings
-  // and leave the developer with no chance to recover them.
+  // The existing file is still parsed as a safety net: if it is not
+  // valid JSON, abort before overwriting so the user does not lose
+  // whatever was in the file (e.g. a half-finished manual edit).
   if (fs.existsSync(outFile)) {
-    let existing: Record<string, { targetField?: string }>;
     try {
-      existing = JSON.parse(fs.readFileSync(outFile, "utf-8"));
+      JSON.parse(fs.readFileSync(outFile, "utf-8"));
     } catch (err: any) {
       console.error("");
       console.error(
@@ -122,9 +138,7 @@ async function scanZodCommand(options: { pattern?: string; out?: string }) {
         ),
       );
       console.error(
-        chalk.red(
-          `Aborting scan to avoid overwriting manually configured mappings.`,
-        ),
+        chalk.red(`Aborting scan to avoid overwriting a corrupt mapping file.`),
       );
       console.error(
         chalk.red(`Fix or move ${path.basename(outFile)} and re-run scan-zod.`),
@@ -133,17 +147,7 @@ async function scanZodCommand(options: { pattern?: string; out?: string }) {
         `Refusing to overwrite unreadable ${path.basename(outFile)}`,
       );
     }
-
-    // Merge only targetField, only for schemas present in the new scan.
-    // Schemas no longer discovered are dropped (existing behavior).
-    for (const name of Object.keys(output)) {
-      const prev = existing[name]?.targetField;
-      if (prev && !output[name].targetField) {
-        output[name].targetField = prev;
-      }
-    }
   }
-
   fs.writeFileSync(outFile, JSON.stringify(output, null, 2), "utf-8");
 
   // Summary output
