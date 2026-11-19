@@ -55,11 +55,26 @@ async function scanZodCommand(options: { pattern?: string; out?: string }) {
     console.log(`Raw Zod definition length: ${schema.raw.length} chars`);
 
     if (Object.keys(schema.fields).length === 0) {
-      console.log(
-        chalk.yellow(
-          `  ${figures.warning} Schema '${schema.name}' has no parseable fields (not an object schema?)`,
-        ),
-      );
+      if (schema.rootField && schema.targetField) {
+        console.log(
+          chalk.green(
+            `  ${figures.tick} Primitive root mapped to "${schema.targetField}" via @FirestoreField`,
+          ),
+        );
+      } else if (schema.rootField) {
+        console.log(
+          chalk.yellow(
+            `  ${figures.warning} Schema '${schema.name}' is a primitive root; ` +
+              `add @FirestoreField <fieldName> to map it to a Firestore field`,
+          ),
+        );
+      } else {
+        console.log(
+          chalk.yellow(
+            `  ${figures.warning} Schema '${schema.name}' has no parseable fields`,
+          ),
+        );
+      }
     }
 
     output[schema.name] = {
@@ -67,6 +82,8 @@ async function scanZodCommand(options: { pattern?: string; out?: string }) {
       sourceFile: schema.sourceFile || undefined,
       fields: schema.fields,
       strict: schema.strict === true,
+      rootField: schema.rootField,
+      targetField: schema.targetField,
       raw: schema.raw,
       requiresManual: schema.requiresManual || {},
     };
@@ -102,6 +119,35 @@ async function scanZodCommand(options: { pattern?: string; out?: string }) {
     }
   }
 
+  // @FirestoreField in the source is the only source of truth for
+  // targetField. The mapping file is regenerated on every scan; any
+  // stale targetField in an existing file is dropped here. Manual
+  // edits no longer survive a rescan — use @FirestoreField instead.
+  //
+  // The existing file is still parsed as a safety net: if it is not
+  // valid JSON, abort before overwriting so the user does not lose
+  // whatever was in the file (e.g. a half-finished manual edit).
+  if (fs.existsSync(outFile)) {
+    try {
+      JSON.parse(fs.readFileSync(outFile, "utf-8"));
+    } catch (err: any) {
+      console.error("");
+      console.error(
+        chalk.red(
+          `${figures.warning} Cannot read existing ${path.basename(outFile)}: ${err.message}`,
+        ),
+      );
+      console.error(
+        chalk.red(`Aborting scan to avoid overwriting a corrupt mapping file.`),
+      );
+      console.error(
+        chalk.red(`Fix or move ${path.basename(outFile)} and re-run scan-zod.`),
+      );
+      throw new Error(
+        `Refusing to overwrite unreadable ${path.basename(outFile)}`,
+      );
+    }
+  }
   fs.writeFileSync(outFile, JSON.stringify(output, null, 2), "utf-8");
 
   // Summary output

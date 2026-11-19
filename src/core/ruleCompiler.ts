@@ -19,7 +19,6 @@ export interface FieldMeta {
 export function buildRequiredCheck(
   schemaFuncName: string,
   fields: Record<string, FieldMeta>,
-  ownerField?: string,
 ): string[] {
   const lines: string[] = [];
 
@@ -119,11 +118,16 @@ export function buildRequiredCheck(
   lines.push(`function ${schemaFuncName}() {`);
   if (fieldExprs.length) {
     lines.push(`  return (${fieldExprs.join(" && ")});`);
-  } else if (ownerField) {
-    lines.push(
-      `  return request.resource.data.${ownerField} == request.auth.uid;`,
-    );
   } else {
+    // No validatable fields. Do NOT substitute an ownership check here:
+    //   - ownerField is a capture variable from the Firestore path
+    //     (e.g. `users/{userId}`), not a document field.
+    //   - Ownership is already enforced via isOwner(...) in the allow rules.
+    //   - A missing schema-to-field mapping must never be papered over
+    //     by an ownership check. `true` is the honest answer.
+    //
+    // Note: generate.ts does not invoke this function with empty `fields`,
+    // so this branch is defensive only.
     lines.push(`  return true;`);
   }
   lines.push(`}`);
