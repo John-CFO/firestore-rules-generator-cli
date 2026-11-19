@@ -25,10 +25,29 @@ interface ParsedSchema {
   fields: Record<string, ParsedField>;
   raw: string;
   strict?: boolean;
+  rootField?: ParsedField;
+  targetField?: string;
   collection?: string;
   sourceFile?: string;
   requiresManual?: Record<string, ParsedField>;
 }
+
+// Discriminated union for root schema result.
+// - "object"    : z.object(...) OR extern opject references
+// - "primitive" : all other types (number, string, boolean, array, enum, unknown)
+// - "failed"    : Initializer could not be parsed
+type ParsedRootResult =
+  | {
+      kind: "object";
+      fields: Record<string, ParsedField>;
+      strict: boolean;
+      ref?: string;
+      // Root-level complex checks, wich are NOT `strict`
+      // (e.g. .extend(), .merge(), .partial()). Is propagated as warining after requiredManual ["<root>"].
+      rootComplexCheck?: string;
+    }
+  | { kind: "primitive"; field: ParsedField }
+  | { kind: "failed"; error: string; failed: true };
 
 // Utility: escape keys for hasOnly
 function escapeKey(key: string): string {
@@ -543,18 +562,13 @@ function parseObjectLiteral(
 }
 
 // Parse raw Zod string using an in-memory ts-morph file
-function parseRawZod(raw: string): {
-  fields: Record<string, ParsedField>;
-  strict: boolean;
-  failed?: boolean;
-} {
+function parseRawZod(raw: string): ParsedRootResult {
   try {
     const tmp = new Project({
       useInMemoryFileSystem: true,
       skipFileDependencyResolution: true,
       skipLoadingLibFiles: true,
     });
-
     // Declare z and i18n as any so the schema parses regardless of imports.
     // Raw is inserted verbatim — no whitespace collapsing, otherwise
     // inline `//` comments would comment out the rest of the schema.
@@ -568,25 +582,59 @@ function parseRawZod(raw: string): {
 
     const decl = src.getVariableDeclaration("__x");
     if (!decl) {
-      return { fields: {}, strict: false };
+      return {
+        kind: "failed",
+        error: "Could not create in-memory declaration for __x",
+        failed: true,
+      };
     }
 
     const init = decl.getInitializer();
     if (!init) {
-      return { fields: {}, strict: false };
+      return {
+        kind: "failed",
+        error: "Parsed declaration __x has no initializer",
+        failed: true,
+      };
     }
 
     const result = parsePropertyInitializer(init);
 
-    return {
-      fields: result?.fields || {},
-      strict: result?.strict === true,
-    };
+    if (!result) {
+      return {
+        kind: "failed",
+        error: "parsePropertyInitializer returned null",
+        failed: true,
+      };
+    }
+
+    // Objekt-Root: entweder inline z.object({…}) (hat `fields`)
+    // oder externe Objekt-Referenz (hat `ref`, keine `fields`).
+    if (result.type === "object") {
+      const rootComplexCheck =
+        result.hasComplexCheck && !result.strict
+          ? result.complexCheckWarning || "Unhandled method on object schema"
+          : undefined;
+
+      return {
+        kind: "object",
+        fields: result.fields || {},
+        strict: result.strict === true,
+        ref: result.ref,
+        rootComplexCheck,
+      };
+    }
+
+    // Alles andere (number, string, boolean, array, enum,
+    // externe non-object-Referenz, unknown): ParsedField VERBATIM
+    // erhalten — inkl. type, min, max, regex, enum, nullable,
+    // hasComplexCheck, complexCheckWarning.
+    return { kind: "primitive", field: result };
   } catch (error: any) {
     console.error(
       `\n⚠ Failed to parse schema (${raw.slice(0, 60)}...): ${error.message}`,
     );
-    return { fields: {}, strict: false, failed: true };
+    return { kind: "failed", error: error.message, failed: true };
   }
 }
 
@@ -624,6 +672,28 @@ function extractSchemas(
       );
       const collection = collectionTag?.getCommentText?.()?.trim();
 
+      // @FirestoreField explicitly maps a primitive-root schema to a
+      // Firestore document field. Only the developer can supply this;
+      // the CLI never infers it from application code.
+      const firestoreFieldTags = allTags.filter(
+        (t: TsMorphNode) => t.getTagName?.() === "FirestoreField",
+      );
+      let targetField: string | undefined;
+      if (firestoreFieldTags.length === 1) {
+        const val = firestoreFieldTags[0].getCommentText?.()?.trim();
+        if (val) {
+          targetField = val;
+        } else {
+          console.warn(
+            `⚠ @FirestoreField on schema in ${sf.getFilePath()}:${stmt.getStartLineNumber()} has no value — ignoring`,
+          );
+        }
+      } else if (firestoreFieldTags.length > 1) {
+        console.warn(
+          `⚠ Multiple @FirestoreField tags (${firestoreFieldTags.length}) in ${sf.getFilePath()}:${stmt.getStartLineNumber()} — ignoring all`,
+        );
+      }
+
       const sourceFile = sf.getFilePath();
 
       for (const decl of stmt.getDeclarations()) {
@@ -634,17 +704,19 @@ function extractSchemas(
         const raw = init.getText();
 
         const parsed = parseRawZod(raw);
-        const fields = parsed.fields;
-        const strict = parsed.strict;
+
+        let fields: Record<string, ParsedField> = {};
+        let strict = false;
+        let rootField: ParsedField | undefined;
 
         // generate requiresManual report
         const requiresManual: Record<string, ParsedField> = {};
 
         function checkFields(
-          fields: Record<string, ParsedField>,
+          fieldsToCheck: Record<string, ParsedField>,
           path: string[] = [],
         ) {
-          for (const [key, field] of Object.entries(fields)) {
+          for (const [key, field] of Object.entries(fieldsToCheck)) {
             const fullPath = [...path, key].join(".");
 
             // Check if field has complex check
@@ -663,12 +735,69 @@ function extractSchemas(
           }
         }
 
-        checkFields(fields);
+        if (parsed.kind === "object") {
+          fields = parsed.fields;
+          strict = parsed.strict;
+
+          // (1) Extern Object-References: Target is not solvable
+          if (parsed.ref) {
+            requiresManual["<ref>"] = {
+              type: "object",
+              required: true,
+              ref: parsed.ref,
+              hasComplexCheck: true,
+              complexCheckWarning:
+                `Root is a reference to external schema '${parsed.ref}' ` +
+                `— resolve or map manually.`,
+            };
+          }
+
+          // (2) Root-level complex Methodes (extend/merge/partial/…)
+          if (parsed.rootComplexCheck) {
+            requiresManual["<root>"] = {
+              type: "object",
+              required: true,
+              hasComplexCheck: true,
+              complexCheckWarning: parsed.rootComplexCheck,
+            };
+          }
+
+          checkFields(fields);
+        } else if (parsed.kind === "primitive") {
+          // Obtain the complete ParsedField (type/min/max/enum/nullable/
+          // regex/ref/…). Downstream processes (discover/generate) must recognize
+          // that field validation is NOT possible here.
+          rootField = parsed.field;
+
+          // Only flag as manual when the developer has not supplied an
+          // explicit @FirestoreField mapping. With a targetField, the
+          // validator is generated automatically.
+          if (!targetField) {
+            requiresManual["<root>"] = {
+              ...rootField,
+              hasComplexCheck: true,
+              complexCheckWarning:
+                rootField.complexCheckWarning ||
+                `Primitive root schema (type=${rootField.type}) cannot be ` +
+                  `auto-mapped to a Firestore field. Provide an explicit target field.`,
+            };
+          }
+        } else {
+          // parsed.kind === "failed"
+          requiresManual["<failed>"] = {
+            type: "unknown",
+            required: true,
+            hasComplexCheck: true,
+            complexCheckWarning: `Failed to parse schema: ${parsed.error}`,
+          };
+        }
 
         output.push({
           name: name,
           fields,
           strict,
+          rootField,
+          targetField,
           collection,
           sourceFile,
           raw,
@@ -677,10 +806,10 @@ function extractSchemas(
       }
     }
   }
-
   return output;
 }
 
 module.exports = { escapeKey, parseRawZod, extractSchemas };
 
+export type { ParsedRootResult };
 export {};
