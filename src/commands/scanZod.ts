@@ -19,7 +19,7 @@ const fs = require("fs");
 
 // --- Scan Zod Command Function ---
 async function scanZodCommand(options: { pattern?: string; out?: string }) {
-  const pattern = options.pattern || "**/*.ts";
+  const pattern = options.pattern || "**/*.{ts,tsx}";
   const outFile = path.resolve(options.out || ".zod-mapping.json");
 
   console.log(
