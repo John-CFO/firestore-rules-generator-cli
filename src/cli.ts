@@ -56,11 +56,11 @@ program
   .description(
     "Scan TypeScript files for @AppSec Zod schemas.\n" +
       "  Examples:\n" +
-      "    frcli scan-zod                              (default: **/*.ts)\n" +
+      "    frcli scan-zod                             (default: **/*.{ts,tsx})\n" +
       '    frcli scan-zod -p "validation/**/*.ts"\n' +
       '    frcli scan-zod -p "src/schemas/**/*.ts" -o .zod-mapping.json',
   )
-  .option("-p, --pattern <glob>", "file pattern to match", "**/*.ts")
+  .option("-p, --pattern <glob>", "file pattern to match", "**/*.{ts,tsx}")
   .option("-o, --out <file>", "output json", ".zod-mapping.json")
   .action(
     wrapAction(_scanZodCommand, "Zod schemas scanned", [
